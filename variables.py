@@ -8,20 +8,20 @@ EOG_FILE = 'dataset/EOG_all_epochs.npy'
 EMG_FILE = 'dataset/EMG_all_epochs.npy'
 
 # --- SNR Range ---
-SNR_RANGE_DB = [-14, 6]  # For training
+SNR_RANGE_DB = [-5, 5]  # For training
 SNR_RANGE_DB_EVAL = np.arange(-14, 6, 2)  # For evaluation (e.g., -14, -12, ..., 4 dB)
 
 # --- Data Split Ratio ---
 TRAIN_SPLIT_RATIO = 0.9  # 90% for training, 10% for testing
 
 # --- Data Augmentation ---
-NUM_NOISE_VARIANTS = 4  # Number of noise variants per clean epoch
+NUM_NOISE_VARIANTS = 8  # Number of noise variants per clean epoch
 
 # --- Model Hyperparameters ---
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
 CHANNELS_EEG = 1
-NUM_EPOCHS = 100
+NUM_EPOCHS = 150
 FEATURES_CRITIC = 16
 FEATURES_GEN = 16
 CRITIC_ITERATIONS = 5
