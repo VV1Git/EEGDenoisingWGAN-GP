@@ -39,8 +39,6 @@ This repository provides a deep learning framework for denoising EEG (Electroenc
 - PyTorch
 - NumPy
 
-(See `requirements.txt` if available for full dependency list.)
-
 ## Getting Started
 
 1. **Prepare Dataset**: Place your preprocessed EEG, EOG, and EMG `.npy` files in the `dataset/` directory.
