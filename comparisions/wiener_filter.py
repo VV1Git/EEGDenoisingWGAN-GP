@@ -8,20 +8,12 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from eeg_data_generator import prepare_eeg_data, EEGNoiseDataset
+from variables import SNR_RANGE_DB_EVAL, EVAL_PLOTS_DIR, EEG_BANDS, SAMPLING_RATE
 
 # --- Variables from variables.py ---
 # This section contains the relevant variables copied from your project's variables.py.
 # This makes the script self-contained and runnable on its own.
-SNR_RANGE_DB_EVAL = np.arange(-14, 6, 2)
-EVAL_PLOTS_DIR = 'evaluation_plots'
-EEG_BANDS = {
-    'delta': [0.5, 4],
-    'theta': [4, 8],
-    'alpha': [8, 13],
-    'beta': [13, 30],
-    'gamma': [30, 100]
-}
-SAMPLING_RATE = 512
+
 
 
 # --- Denoising Function ---
@@ -45,9 +37,11 @@ def wiener_filter_scipy(noisy_signal, mysize=None, noise=None):
     Returns:
         np.ndarray: The denoised signal.
     """
-    # We use the 'scipy.signal.wiener' function, which provides a robust implementation.
-    # It can work adaptively without an explicit noise power spectrum.
-    # The 'mysize' parameter is used to specify the neighborhood for noise estimation.
+    # Ensure input is 1D float64
+    noisy_signal = np.asarray(noisy_signal, dtype=np.float64).flatten()
+    # Use a reasonable window size for EEG (e.g., 31 samples ~0.12s at 256Hz)
+    if mysize is None:
+        mysize = 31
     denoised_signal = signal.wiener(noisy_signal, mysize=mysize, noise=noise)
     return denoised_signal
 
@@ -82,7 +76,7 @@ def calculate_rrmse(denoised_signal, clean_signal):
         denoised_signal (np.ndarray): The denoised signal.
         clean_signal (np.ndarray): The ground-truth clean signal.
 
-    Returns:
+    Returns:h
         float: The RRMSE value.
     """
     mse = np.mean((denoised_signal - clean_signal)**2)
@@ -227,6 +221,36 @@ def create_and_save_band_power_plots(band_power_data, bands, title, filename_pre
         print(f"Plot saved to {save_path}")
         plt.close(fig)
 
+def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path):
+    """
+    Plots sample denoising results for multiple SNRs in a single figure.
+
+    Args:
+        snrs (list): List of SNR values (e.g., [-14, -12]).
+        noisy_samples (list): List of 1D numpy arrays (noisy signals).
+        clean_samples (list): List of 1D numpy arrays (clean signals).
+        denoised_samples (list): List of 1D numpy arrays (denoised signals).
+        save_path (str): Path to save the combined plot.
+    """
+    num = len(snrs)
+    fig, axes = plt.subplots(num, 1, figsize=(15, 3 * num), sharex=True)
+    if num == 1:
+        axes = [axes]
+    fig.suptitle("Sample Denoising Comparison for SNRs: " + ", ".join([str(s) for s in snrs]), fontsize=16)
+    for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
+        ax = axes[idx]
+        ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
+        ax.plot(noisy, label='Noisy EEG', color='red', alpha=0.7)
+        ax.plot(denoised, label='Denoised EEG', color='green', linestyle='--', alpha=0.8)
+        ax.set_title(f"SNR {snr} dB")
+        ax.set_xlabel("Sample Index")
+        ax.set_ylabel("Amplitude")
+        ax.legend()
+        ax.grid(True)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(save_path)
+    plt.close(fig)
+
 # --- Main Logic for Generating Plots ---
 if __name__ == "__main__":
     print(f"Generating evaluation plots and saving to '{EVAL_PLOTS_DIR}'...")
@@ -240,7 +264,7 @@ if __name__ == "__main__":
     SNR_RANGE_DB = [-14, 6]  # Min/max SNR for dataset, not used directly here
 
     # Set EVAL_PLOTS_DIR to be inside the comparisions folder
-    EVAL_PLOTS_DIR = os.path.join(os.path.dirname(__file__), "comparisions/evaluation_plots")
+    EVAL_PLOTS_DIR = os.path.join(os.path.dirname(__file__), "wiener_evaluation_plots")
 
     # Load and normalize data
     clean_eeg_np, eog_noise_np, emg_noise_np = prepare_eeg_data(EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB)
@@ -257,14 +281,18 @@ if __name__ == "__main__":
     example_denoised_signal = None
     example_clean_signal = None
 
+    # New: Collect one sample per SNR for grouped plots
+    snr_samples = []  # List of (snr, noisy, clean, denoised)
+
     for snr_db in SNR_RANGE_DB_EVAL:
         # For each SNR, generate one noisy-clean pair per clean epoch, then average metrics
         cc_list = []
         rrmse_list = []
         band_power_bandwise = {band: [] for band in EEG_BANDS.keys()}
 
+        example_saved = False
         for i in range(clean_eeg_np.shape[0]):
-            clean_epoch = clean_eeg_np[i]
+            clean_epoch = clean_eeg_np[i].astype(np.float64).flatten()
             # Randomly pick a noise type and epoch
             noise_type = np.random.choice(['eog', 'emg', 'both'])
             if noise_type == 'eog' and eog_noise_np is not None:
@@ -276,7 +304,8 @@ if __name__ == "__main__":
                 emg = emg_noise_np[np.random.randint(len(emg_noise_np))] if emg_noise_np is not None else np.zeros_like(clean_epoch)
                 noise_epoch = eog + emg
 
-            # Ensure noise is correct length
+            # Ensure noise is correct length and float64
+            noise_epoch = np.asarray(noise_epoch, dtype=np.float64).flatten()
             if len(noise_epoch) != time_len_samples:
                 if len(noise_epoch) > time_len_samples:
                     noise_epoch = noise_epoch[:time_len_samples]
@@ -292,8 +321,17 @@ if __name__ == "__main__":
             alpha = np.sqrt(clean_power / (snr_linear * noise_power))
             noisy_signal = clean_epoch + alpha * noise_epoch
 
+            # --- Fix: Remove DC offset for Wiener filter (optional, but helps) ---
+            noisy_signal = noisy_signal - np.mean(noisy_signal)
+            clean_epoch = clean_epoch - np.mean(clean_epoch)
+
             # Denoise
-            denoised_signal = wiener_filter_scipy(noisy_signal, mysize=None)
+            denoised_signal = wiener_filter_scipy(noisy_signal, mysize=31)
+
+            # --- Ensure denoised_signal is not just a copy of noisy_signal ---
+            # If the output is identical, warn and skip
+            if np.allclose(denoised_signal, noisy_signal):
+                print(f"Warning: Wiener filter output identical to noisy input at SNR {snr_db} (mysize={31}).")
 
             # Metrics
             cc = calculate_cc(denoised_signal, clean_epoch)
@@ -318,6 +356,16 @@ if __name__ == "__main__":
                 example_noisy_signal = noisy_signal
                 example_denoised_signal = denoised_signal
                 example_clean_signal = clean_epoch
+
+            # Collect one sample per SNR for grouped plots
+            if not example_saved:
+                snr_samples.append((
+                    snr_db,
+                    noisy_signal,
+                    clean_epoch,
+                    denoised_signal
+                ))
+                example_saved = True
 
         # Average metrics for this SNR
         cc_scores.append(np.mean(cc_list))
@@ -368,5 +416,17 @@ if __name__ == "__main__":
             f'Power Spectral Density Comparison (SNR = {SNR_RANGE_DB_EVAL[-1]} dB)',
             'PSD_comparison_example.png'
         )
+
+    # Save grouped plots for SNRs in pairs
+    group_size = 2
+    for idx in range(0, len(snr_samples), group_size):
+        group = snr_samples[idx:idx+group_size]
+        snrs = [item[0] for item in group]
+        noisy_samples = [item[1] for item in group]
+        clean_samples = [item[2] for item in group]
+        denoised_samples = [item[3] for item in group]
+        save_path = join(EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_{'_'.join(str(s) for s in snrs)}.png")
+        plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path)
+        print(f"Saved grouped sample denoising plot for SNRs {snrs} to '{save_path}'")
 
     print("\nAll evaluation plots have been generated and saved to the 'evaluation_plots' folder.")

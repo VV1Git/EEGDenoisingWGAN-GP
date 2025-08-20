@@ -1,75 +1,56 @@
 import numpy as np
-import os
-from sklearn.model_selection import train_test_split # type:ignore
-
-# Import data preparation utilities from your custom file
-# Ensure 'eeg_data_generator.py' is in the same directory or accessible in PYTHONPATH
+import matplotlib.pyplot as plt
 from eeg_data_generator import prepare_eeg_data, EEGNoiseDataset
 
+def plot_eeg_overlay(clean_eeg, noisy_eeg, db_list, num_examples=4):
+    plt.figure(figsize=(12, 2.5 * num_examples))
+    for i in range(num_examples):
+        artefact = noisy_eeg[i] - clean_eeg[i]  # Changed order here
+        plt.subplot(num_examples, 1, i + 1)
+        plt.plot(clean_eeg[i].squeeze(), label="Clean EEG", color='blue')
+        plt.plot(noisy_eeg[i].squeeze(), label="Noisy EEG", color='red', alpha=0.6)
+        plt.plot(artefact.squeeze(), label="Artefact (Noisy - Clean)", color='purple', alpha=0.7)
+        plt.title(f"EEG Epoch {i+1}" + f" (SNR: {db_list[i]:.2f} dB)")
+        plt.xlabel("Sample")
+        plt.ylabel("Amplitude")
+        plt.legend(loc="upper right")
+    plt.tight_layout()
+    plt.show()
+
 def main():
-    """
-    This script demonstrates the data splitting and calculates the number of
-    augmented data fragment pairs for training and testing datasets.
-    """
-    # --- Configuration (MUST match training.py and evaluate_model.py) ---
     EEG_FILE = 'dataset/EEG_all_epochs.npy'
     EOG_FILE = 'dataset/EOG_all_epochs.npy'
     EMG_FILE = 'dataset/EMG_all_epochs.npy'
-    SNR_RANGE_DB = [-5, 5] # This range is used by EEGNoiseDataset, but not for counting here.
+    SNR_RANGE_DB = [-35, -20]
+    BATCH_SIZE = 4
 
-    TRAIN_SPLIT_RATIO = 0.9 # 90% for training, 10% for testing
-    NUM_NOISE_VARIANTS = 4 # Number of noise variants per clean epoch for augmentation
-
-    print("--- Data Split and Augmentation Calculation ---")
-
-    # 1. Load raw data
     try:
         clean_eeg_all, eog_noise_np, emg_noise_np = prepare_eeg_data(
-            EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB # SNR_RANGE_DB is a placeholder for prepare_eeg_data
+            EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB
         )
-        print(f"\nTotal raw clean EEG epochs loaded: {clean_eeg_all.shape[0]}")
-        print(f"Total raw EOG noise epochs loaded: {eog_noise_np.shape[0]}")
-        print(f"Total raw EMG noise epochs loaded: {emg_noise_np.shape[0]}")
     except (FileNotFoundError, ValueError) as e:
         print(f"Error preparing data: {e}")
-        print("Please ensure your dataset files are correctly placed and named.")
         return
 
-    # 2. Perform the 90/10 split on the *clean EEG epochs*
-    # This ensures that the training and testing sets have completely unseen clean data.
-    train_clean_eeg_np, test_clean_eeg_np = train_test_split(
-        clean_eeg_all, test_size=(1 - TRAIN_SPLIT_RATIO), random_state=42
-    )
+    # Use only a subset for visualization
+    clean_eeg_subset = clean_eeg_all[:BATCH_SIZE]
+    # Generate a random SNR for each sample
+    db_list = np.random.uniform(SNR_RANGE_DB[0], SNR_RANGE_DB[1], size=BATCH_SIZE)
 
-    print(f"\nAfter 90/10 split on clean EEG epochs:")
-    print(f"  Training clean EEG epochs: {train_clean_eeg_np.shape[0]}")
-    print(f"  Testing clean EEG epochs: {test_clean_eeg_np.shape[0]}")
 
-    # 3. Instantiate EEGNoiseDataset for training and testing
-    # The 'num_noise_variants_per_clean_epoch' parameter determines the effective size.
-    train_dataset = EEGNoiseDataset(
-        train_clean_eeg_np, eog_noise_np, emg_noise_np, SNR_RANGE_DB,
-        num_noise_variants_per_clean_epoch=NUM_NOISE_VARIANTS
-    )
+    noisy_eeg_list = []
+    clean_eeg_list = []
+    for i in range(BATCH_SIZE):
+        # Re-generate noisy signal for the specific SNR
+        sample_dataset = EEGNoiseDataset(
+            clean_eeg_subset[i:i+1], eog_noise_np, emg_noise_np, [db_list[i], db_list[i]],
+            num_noise_variants_per_clean_epoch=1
+        )
+        noisy, clean = sample_dataset[0]
+        noisy_eeg_list.append(noisy.numpy().squeeze())
+        clean_eeg_list.append(clean.numpy().squeeze())
 
-    test_dataset = EEGNoiseDataset(
-        test_clean_eeg_np, eog_noise_np, emg_noise_np, SNR_RANGE_DB,
-        num_noise_variants_per_clean_epoch=NUM_NOISE_VARIANTS
-    )
-
-    # 4. Report the total number of augmented data fragment pairs
-    print(f"\nAugmented data fragment pairs per epoch (with {NUM_NOISE_VARIANTS} variants per clean epoch):")
-    print(f"  Training augmented samples: {len(train_dataset)}")
-    print(f"  Testing augmented samples: {len(test_dataset)}")
-
-    # Verify the calculation
-    expected_train_samples = train_clean_eeg_np.shape[0] * NUM_NOISE_VARIANTS
-    expected_test_samples = test_clean_eeg_np.shape[0] * NUM_NOISE_VARIANTS
-    print(f"\nVerification:")
-    print(f"  Expected training samples: {expected_train_samples}")
-    print(f"  Expected testing samples: {expected_test_samples}")
-    print(f"  Total expected samples: {expected_train_samples + expected_test_samples}")
-
+    plot_eeg_overlay(clean_eeg_list, noisy_eeg_list, db_list, num_examples=BATCH_SIZE)
 
 if __name__ == "__main__":
     main()

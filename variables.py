@@ -8,8 +8,8 @@ EOG_FILE = 'dataset/EOG_all_epochs.npy'
 EMG_FILE = 'dataset/EMG_all_epochs.npy'
 
 # --- SNR Range ---
-SNR_RANGE_DB = [-5, 5]  # For training
-SNR_RANGE_DB_EVAL = np.arange(-14, 6, 2)  # For evaluation (e.g., -14, -12, ..., 4 dB)
+SNR_RANGE_DB = [-14, 0]  # For training
+SNR_RANGE_DB_EVAL = np.arange(-14, 2, 2)  # For evaluation (e.g., -14, -12, ..., 4 dB)
 
 # --- Data Split Ratio ---
 TRAIN_SPLIT_RATIO = 0.9  # 90% for training, 10% for testing

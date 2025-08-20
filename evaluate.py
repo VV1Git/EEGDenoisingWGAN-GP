@@ -180,43 +180,35 @@ def calculate_cosine_similarity_power_ratios(clean_signal_np, denoised_signal_np
 
 
 # --- Visualization Function (reused from training.py, adapted for evaluation) ---
-def plot_evaluation_samples(noisy_sample, clean_sample, denoised_sample, run_label, num_plots=4, save_path=None):
+def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path):
     """
-    Plots a few noisy, clean, and denoised EEG signals for evaluation visualization.
+    Plots sample denoising results for multiple SNRs in a single figure.
 
     Args:
-        noisy_sample (torch.Tensor): A batch of noisy EEG signals.
-        clean_sample (torch.Tensor): A batch of corresponding clean EEG signals.
-        denoised_sample (torch.Tensor): A batch of denoised EEG signals from the generator.
-        run_label (str): A label for the evaluation run (e.g., "Test Set Evaluation").
-        num_plots (int): Number of samples to plot from the batch.
-        save_path (str, optional): If provided, the plot will be saved to this path.
+        snrs (list): List of SNR values (e.g., [-14, -12]).
+        noisy_samples (list): List of 1D numpy arrays (noisy signals).
+        clean_samples (list): List of 1D numpy arrays (clean signals).
+        denoised_samples (list): List of 1D numpy arrays (denoised signals).
+        save_path (str): Path to save the combined plot.
     """
-    noisy_sample_np = noisy_sample.cpu().detach().numpy()
-    clean_sample_np = clean_sample.cpu().detach().numpy()
-    denoised_sample_np = denoised_sample.cpu().detach().numpy()
-
-    fig = plt.figure(figsize=(15, 3 * num_plots))
-    plt.suptitle(f"{run_label} - Sample Denoising Comparison", fontsize=16)
-
-    for i in range(min(num_plots, noisy_sample_np.shape[0])):
-        ax = plt.subplot(num_plots, 1, i + 1)
-        ax.plot(clean_sample_np[i, 0, :], label='Clean EEG', color='blue', alpha=0.7)
-        ax.plot(noisy_sample_np[i, 0, :], label='Noisy EEG', color='red', alpha=0.7)
-        ax.plot(denoised_sample_np[i, 0, :], label='Denoised EEG', color='green', linestyle='--', alpha=0.8)
-        ax.set_title(f"Sample {i+1}")
+    num = len(snrs)
+    fig, axes = plt.subplots(num, 1, figsize=(15, 3 * num), sharex=True)
+    if num == 1:
+        axes = [axes]
+    fig.suptitle("Sample Denoising Comparison for SNRs: " + ", ".join([str(s) for s in snrs]), fontsize=16)
+    for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
+        ax = axes[idx]
+        ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
+        ax.plot(noisy, label='Noisy EEG', color='red', alpha=0.7)
+        ax.plot(denoised, label='Denoised EEG', color='green', linestyle='--', alpha=0.8)
+        ax.set_title(f"SNR {snr} dB")
         ax.set_xlabel("Sample Index")
         ax.set_ylabel("Amplitude")
         ax.legend()
         ax.grid(True)
-
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-
-    if save_path:
-        plt.savefig(save_path)
-        plt.close(fig)
-    else:
-        plt.show()
+    plt.savefig(save_path)
+    plt.close(fig)
 
 def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sampling_rate, bands, save_path=None):
     """
@@ -271,7 +263,6 @@ def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sa
             sorted_labels = [b.capitalize() for b in bands.keys()]
             order = [labels.index(l) for l in sorted_labels if l in labels]
             ax.legend([handles[idx] for idx in order], [labels[idx] for idx in order], loc='upper right', fontsize='small')
-
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to prevent suptitle overlap
 
@@ -334,6 +325,9 @@ def main():
     cc_per_snr = []
     cosine_sim_power_ratios_at_neg14db = [] # New list for cosine similarity at -14dB
 
+    # --- New: Collect one sample per SNR for grouped plots ---
+    snr_samples = []  # List of (snr, noisy, clean, denoised)
+
     print("\n--- Starting evaluation across different SNRs ---")
     for current_snr_db in snr_values_db:
         print(f"\nEvaluating at SNR: {current_snr_db} dB")
@@ -352,7 +346,10 @@ def main():
         batch_rrmse_temporal = []
         batch_rrmse_spectral = []
         batch_cc = []
-        batch_cosine_sim_power_ratios = [] # For current SNR if needed, or specifically for -14dB
+        batch_cosine_sim_power_ratios = []
+
+        # --- New: Save one example plot per SNR ---
+        example_saved = False
 
         with torch.no_grad():
             for batch_idx, (noisy_signals, clean_signals) in enumerate(tqdm(test_loader_current_snr, desc=f"SNR {current_snr_db}dB")):
@@ -382,6 +379,16 @@ def main():
                                 EEG_BANDS
                             )
                         )
+
+                    # --- Collect one sample per SNR for grouped plots ---
+                    if not example_saved:
+                        snr_samples.append((
+                            current_snr_db,
+                            noisy_signals_np[i, 0, :],
+                            clean_signals_np[i, 0, :],
+                            denoised_signals_np[i, 0, :]
+                        ))
+                        example_saved = True
             
             # Aggregate metrics for the current SNR
             rrmse_temporal_per_snr.append(np.mean(batch_rrmse_temporal))
@@ -392,6 +399,17 @@ def main():
             if current_snr_db == -14:
                 cosine_sim_power_ratios_at_neg14db.append(np.mean(batch_cosine_sim_power_ratios))
 
+    # --- New: Save grouped plots for SNRs in pairs ---
+    group_size = 2
+    for idx in range(0, len(snr_samples), group_size):
+        group = snr_samples[idx:idx+group_size]
+        snrs = [item[0] for item in group]
+        noisy_samples = [item[1] for item in group]
+        clean_samples = [item[2] for item in group]
+        denoised_samples = [item[3] for item in group]
+        save_path = os.path.join(EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_{'_'.join(str(s) for s in snrs)}.png")
+        plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path)
+        print(f"Saved grouped sample denoising plot for SNRs {snrs} to '{save_path}'")
 
     print("\n--- Plotting SNR vs. Metrics ---")
     # Plot RRMSE Temporal vs SNR
@@ -472,18 +490,17 @@ def main():
                 denoised_band_ratios_agg_overall[band].append(denoised_ratios_batch[f'{band}_ratio'])
             
             if batch_idx == 0: # Only plot one example from the overall test set
-                plot_evaluation_samples(
-                    noisy_signals[:4],
-                    clean_signals[:4],
-                    denoised_signals[:4],
-                    run_label="Overall Test Set Example",
-                    num_plots=4,
+                # --- Fix: Use plot_multi_snr_samples for overall test set example ---
+                plot_multi_snr_samples(
+                    snrs=[1, 2, 3, 4],  # Dummy SNRs for labeling, replace as needed
+                    noisy_samples=[noisy_signals_np[i, 0, :] for i in range(4)],
+                    clean_samples=[clean_signals_np[i, 0, :] for i in range(4)],
+                    denoised_samples=[denoised_signals_np[i, 0, :] for i in range(4)],
                     save_path=os.path.join(EVAL_PLOTS_DIR, "overall_test_denoising_example.png")
                 )
                 print(f"Saved overall example denoising plot to '{os.path.join(EVAL_PLOTS_DIR, 'overall_test_denoising_example.png')}'")
                 
                 # Plot PSD comparison for one sample from this batch
-                # Use the new PSD_SAMPLE_INDEX_FOR_VIZ variable
                 plot_psd_comparison(
                     clean_signals_np[PSD_SAMPLE_INDEX_FOR_VIZ, 0, :], # Access specific sample and channel
                     noisy_signals_np[PSD_SAMPLE_INDEX_FOR_VIZ, 0, :],
