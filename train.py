@@ -12,7 +12,7 @@ from eeg_data_generator import prepare_eeg_data, EEGNoiseDataset, DataLoader
 from variables import (
     EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB, TRAIN_SPLIT_RATIO, NUM_NOISE_VARIANTS,
     LEARNING_RATE, BATCH_SIZE, CHANNELS_EEG, NUM_EPOCHS, FEATURES_CRITIC, FEATURES_GEN,
-    CRITIC_ITERATIONS, LAMBDA_GP, LOGS_DIR
+    CRITIC_ITERATIONS, LAMBDA_GP, LOGS_DIR, LAMBDA_L1, GEN_NUM_LAYERS, DISC_NUM_LAYERS
 )
 
 from utils import gradient_penalty, save_checkpoint, load_checkpoint
@@ -70,8 +70,8 @@ print(f"DataLoader configured with num_workers={num_workers_to_use} and pin_memo
 print(f"Training will use {len(eeg_denoising_train_dataset)} augmented samples per epoch.")
 
 # --- Initialize Generator and Critic Models ---
-gen = Generator(CHANNELS_EEG, SAMPLES_PER_EPOCH, FEATURES_GEN).to(device)
-critic = Discriminator(CHANNELS_EEG, SAMPLES_PER_EPOCH, FEATURES_CRITIC).to(device)
+gen = Generator(CHANNELS_EEG, SAMPLES_PER_EPOCH, FEATURES_GEN, dropout_p=0.2, num_layers=GEN_NUM_LAYERS).to(device)
+critic = Discriminator(CHANNELS_EEG, SAMPLES_PER_EPOCH, FEATURES_CRITIC, num_layers=DISC_NUM_LAYERS).to(device)
 
 initialize_weights(gen)
 initialize_weights(critic)
@@ -82,6 +82,8 @@ opt_critic = optim.Adam(critic.parameters(), lr=LEARNING_RATE, betas=(0.0, 0.9))
 
 gen.train()
 critic.train()
+
+l1_loss_fn = nn.L1Loss()
 
 # --- Training Loop ---
 print("\nStarting WGAN-GP training for EEG Denoising...")
@@ -106,8 +108,11 @@ for epoch in range(NUM_EPOCHS):
             loss_critic.backward(retain_graph=True)
             opt_critic.step()
 
+        fake_denoised_signals = gen(noisy_signals)
         gen_fake_score = critic(fake_denoised_signals).reshape(-1)
-        loss_gen = -torch.mean(gen_fake_score)
+        adv_loss = -torch.mean(gen_fake_score)
+        l1_loss = l1_loss_fn(fake_denoised_signals, clean_signals)
+        loss_gen = adv_loss + LAMBDA_L1 * l1_loss
 
         gen.zero_grad()
         loss_gen.backward()
@@ -118,7 +123,7 @@ for epoch in range(NUM_EPOCHS):
         save_checkpoint({'gen': gen.state_dict(), 'opt_gen': opt_gen.state_dict()}, checkpoint_filename)
         print(f"Saved generator checkpoint for Epoch {epoch+1} to '{checkpoint_filename}'")
 
-    print(f"Epoch {epoch+1} finished. Loss Critic: {loss_critic.item():.4f}, Loss Generator: {loss_gen.item():.4f}")
+    print(f"Epoch {epoch+1} finished. Loss Critic: {loss_critic.item():.4f}, Loss Generator: {loss_gen.item():.4f}, L1 Loss: {l1_loss.item():.4f}")
 
 print("\nTraining complete!")
 

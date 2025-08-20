@@ -1,34 +1,29 @@
 import torch
 import torch.nn as nn
+from variables import GEN_NUM_LAYERS, DISC_NUM_LAYERS
 
 # --- Discriminator (Critic) for 1D EEG Signals ---
 class Discriminator(nn.Module):
-    def __init__(self, channels_eeg, seq_len, features_d):
+    def __init__(self, channels_eeg, seq_len, features_d, num_layers=DISC_NUM_LAYERS):
         super(Discriminator, self).__init__()
-        # Input: N x channels_eeg x seq_len (e.g., N x 1 x 512)
-        self.disc = nn.Sequential(
-            # First layer: Reduce sequence length, increase features
-            # Example: 1x512 -> features_d x 256 (kernel_size=4, stride=2, padding=1)
+        layers = [
             nn.Conv1d(channels_eeg, features_d, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2),
-            # _block(in_channels, out_channels, kernel_size, stride, padding)
-            self._block(features_d, features_d * 2, 4, 2, 1),   # e.g., 256 -> 128
-            self._block(features_d * 2, features_d * 4, 4, 2, 1), # e.g., 128 -> 64
-            self._block(features_d * 4, features_d * 8, 4, 2, 1), # e.g., 64 -> 32
-            # After these blocks, the sequence length will be significantly reduced.
-            # Calculate output sequence length after blocks:
-            # L_out = floor((L_in + 2*padding - kernel_size)/stride) + 1
-            # For seq_len=512, kernel=4, stride=2, padding=1:
-            # L1 = floor((512 + 2*1 - 4)/2) + 1 = 256
-            # L2 = floor((256 + 2*1 - 4)/2) + 1 = 128
-            # L3 = floor((128 + 2*1 - 4)/2) + 1 = 64
-            # L4 = floor((64 + 2*1 - 4)/2) + 1 = 32
-            # The final Conv1d should map the last feature map to a single scalar per batch item.
-            # This requires a kernel size that matches the final sequence length.
-            nn.Conv1d(features_d * 8, 1, kernel_size=32, stride=1, padding=0), # Output: N x 1 x 1
-        )
+        ]
+        in_ch = features_d
+        for i in range(1, num_layers):
+            out_ch = features_d * (2 ** i)
+            layers.append(self._block(in_ch, out_ch, 4, 2, 1))
+            in_ch = out_ch
+        # Final output layer
+        final_kernel = seq_len // (2 ** num_layers)
+        if final_kernel < 1:
+            final_kernel = 1
+        layers.append(nn.Conv1d(in_ch, 1, kernel_size=final_kernel, stride=1, padding=0))
+        self.disc = nn.Sequential(*layers)
 
     def _block(self, in_channels, out_channels, kernel_size, stride, padding):
+        num_groups = min(8, out_channels)
         return nn.Sequential(
             nn.Conv1d(
                 in_channels,
@@ -36,77 +31,116 @@ class Discriminator(nn.Module):
                 kernel_size,
                 stride,
                 padding,
-                bias=False, # Bias is often set to False when using InstanceNorm
+                bias=False,
             ),
-            nn.InstanceNorm1d(out_channels, affine=True), # Use InstanceNorm1d for 1D data
+            nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True),
             nn.LeakyReLU(0.2),
         )
 
     def forward(self, x):
         return self.disc(x)
 
-
-# --- Generator for 1D EEG Denoising ---
+# --- Generator for 1D EEG Denoising with Skip Connections (U-Net) ---
 class Generator(nn.Module):
-    def __init__(self, channels_eeg, seq_len, features_g):
+    def __init__(self, channels_eeg, seq_len, features_g, dropout_p=0.2, num_layers=GEN_NUM_LAYERS):
         super(Generator, self).__init__()
-        # Input: N x channels_eeg x seq_len (noisy EEG, e.g., N x 1 x 512)
-        # Output: N x channels_eeg x seq_len (denoised EEG, e.g., N x 1 x 512)
-        # This architecture is a U-Net like structure or an encoder-decoder
-        # for denoising, rather than generating from noise.
-        # We'll use Conv1d for downsampling and ConvTranspose1d for upsampling.
+        self.num_layers = num_layers
+        enc_layers = []
+        encoder_channels = []
 
-        # Encoder (Downsampling path)
-        self.encoder = nn.Sequential(
-            # Input: N x 1 x 512
-            nn.Conv1d(channels_eeg, features_g, kernel_size=4, stride=2, padding=1), # -> N x features_g x 256
+        # First encoder layer (no norm)
+        enc_layers.append(nn.Sequential(
+            nn.Conv1d(channels_eeg, features_g, 4, 2, 1),
             nn.LeakyReLU(0.2),
-            self._enc_block(features_g, features_g * 2, 4, 2, 1), # -> N x features_g*2 x 128
-            self._enc_block(features_g * 2, features_g * 4, 4, 2, 1), # -> N x features_g*4 x 64
-            self._enc_block(features_g * 4, features_g * 8, 4, 2, 1), # -> N x features_g*8 x 32
-            self._enc_block(features_g * 8, features_g * 16, 4, 2, 1), # -> N x features_g*16 x 16
+        ))
+        encoder_channels.append(features_g)
+        in_ch = features_g
+
+        # Remaining encoder layers
+        for i in range(1, num_layers):
+            out_ch = features_g * (2 ** i)
+            enc_layers.append(self._enc_block(in_ch, out_ch, dropout_p))
+            encoder_channels.append(out_ch)
+            in_ch = out_ch
+        self.encoders = nn.ModuleList(enc_layers)
+        self.encoder_channels = encoder_channels
+
+        # Decoder (with skip connections)
+        dec_layers = []
+        decoder_in_channels = []
+        decoder_out_channels = []
+        # Start from the deepest encoder output
+        prev_out_ch = encoder_channels[-1]
+        for i in range(num_layers - 1, 0, -1):
+            skip_ch = encoder_channels[i - 1]
+            out_ch = skip_ch
+            in_ch = prev_out_ch + skip_ch
+            dec_layers.append(self._dec_block(in_ch, out_ch, dropout_p))
+            decoder_in_channels.append(in_ch)
+            decoder_out_channels.append(out_ch)
+            prev_out_ch = out_ch
+        self.decoders = nn.ModuleList(dec_layers)
+        # Final layer: input is concat of last decoder output and first encoder output
+        self.final = nn.Sequential(
+            nn.ConvTranspose1d(encoder_channels[0] * 2, channels_eeg, 4, 2, 1),
+            nn.Tanh(),
         )
 
-        # Decoder (Upsampling path)
-        self.decoder = nn.Sequential(
-            # Input from encoder: N x features_g*16 x 16
-            self._dec_block(features_g * 16, features_g * 8, 4, 2, 1), # -> N x features_g*8 x 32
-            self._dec_block(features_g * 8, features_g * 4, 4, 2, 1), # -> N x features_g*4 x 64
-            self._dec_block(features_g * 4, features_g * 2, 4, 2, 1), # -> N x features_g*2 x 128
-            self._dec_block(features_g * 2, features_g, 4, 2, 1), # -> N x features_g x 256
-            # Final layer to output the original channel count
-            nn.ConvTranspose1d(features_g, channels_eeg, kernel_size=4, stride=2, padding=1), # -> N x channels_eeg x 512
-            nn.Tanh(), # Output values typically in [-1, 1] if input was normalized
-        )
-
-    def _enc_block(self, in_channels, out_channels, kernel_size, stride, padding):
+    def _enc_block(self, in_channels, out_channels, dropout_p):
+        num_groups = min(8, out_channels)
         return nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding, bias=False),
-            nn.BatchNorm1d(out_channels), # Use BatchNorm1d for 1D data
+            nn.Conv1d(in_channels, out_channels, 4, 2, 1, bias=False),
+            nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True),
             nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_p),
         )
 
-    def _dec_block(self, in_channels, out_channels, kernel_size, stride, padding):
+    def _dec_block(self, in_channels, out_channels, dropout_p):
+        num_groups = min(8, out_channels)
         return nn.Sequential(
-            nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride, padding, bias=False),
-            nn.BatchNorm1d(out_channels), # Use BatchNorm1d for 1D data
+            nn.ConvTranspose1d(in_channels, out_channels, 4, 2, 1, bias=False),
+            nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True),
             nn.ReLU(),
+            nn.Dropout(dropout_p),
         )
 
     def forward(self, x):
-        # For a simple encoder-decoder, just pass through.
-        # For U-Net, you'd add skip connections here.
-        encoded = self.encoder(x)
-        denoised = self.decoder(encoded)
-        return denoised
+        # Encoder
+        enc_feats = []
+        out = x
+        for enc in self.encoders:
+            out = enc(out)
+            enc_feats.append(out)
+        # Decoder with skip connections
+        out = enc_feats[-1]
+        for i, dec in enumerate(self.decoders):
+            skip = enc_feats[-(i + 2)]
+            skip = self._crop_or_pad(skip, out.size(-1))
+            out = dec(torch.cat([out, skip], dim=1))
+        # Final skip connection
+        skip0 = self._crop_or_pad(enc_feats[0], out.size(-1))
+        out = self.final(torch.cat([out, skip0], dim=1))
+        return out
 
+    def _crop_or_pad(self, tensor, target_length):
+        """Crop or pad tensor along the last dimension to match target_length."""
+        current_length = tensor.size(-1)
+        if current_length == target_length:
+            return tensor
+        elif current_length > target_length:
+            return tensor[..., :target_length]
+        else:
+            pad_amt = target_length - current_length
+            # Pad at the end
+            return nn.functional.pad(tensor, (0, pad_amt))
 
 def initialize_weights(model):
-    # Initializes weights for 1D convolutional layers
     for m in model.modules():
-        if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d, nn.BatchNorm1d, nn.InstanceNorm1d)):
+        if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
             nn.init.normal_(m.weight.data, 0.0, 0.02)
-        # No need to initialize bias if bias=False in Conv layers
+        if isinstance(m, (nn.GroupNorm,)):
+            nn.init.constant_(m.weight.data, 1.0)
+            nn.init.constant_(m.bias.data, 0)
         if hasattr(m, 'bias') and m.bias is not None:
             nn.init.constant_(m.bias.data, 0)
 

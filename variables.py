@@ -21,11 +21,16 @@ NUM_NOISE_VARIANTS = 8  # Number of noise variants per clean epoch
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
 CHANNELS_EEG = 1
-NUM_EPOCHS = 150
-FEATURES_CRITIC = 16
-FEATURES_GEN = 16
+NUM_EPOCHS = 100
+FEATURES_CRITIC = 32
+FEATURES_GEN = 32
 CRITIC_ITERATIONS = 5
 LAMBDA_GP = 10
+LAMBDA_L1 = 100.0  # Weight for L1 loss
+
+# --- Model Depth (Number of Layers) ---
+GEN_NUM_LAYERS = 6  # Number of encoder/decoder layers in Generator (U-Net depth)
+DISC_NUM_LAYERS = 5  # Number of layers in Discriminator (excluding final output layer)
 
 # --- Logging/Output Directories ---
 LOGS_DIR = 'logs'
