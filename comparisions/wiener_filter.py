@@ -1,9 +1,13 @@
-import numpy as np
-import scipy.signal as signal
-import matplotlib.pyplot as plt
-from scipy.signal import welch
-from os.path import join
+import numpy as np # type:ignore
+import scipy.signal as signal # type:ignore
+import matplotlib.pyplot as plt # type:ignore
+from scipy.signal import welch # type:ignore
+from os.path import join 
 import os
+
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from eeg_data_generator import prepare_eeg_data, EEGNoiseDataset
 
 # --- Variables from variables.py ---
 # This section contains the relevant variables copied from your project's variables.py.
@@ -137,7 +141,7 @@ def create_and_save_plot(x, y, xlabel, ylabel, title, filename):
         y (list or np.ndarray): The y-axis data.
         xlabel (str): The label for the x-axis.
         ylabel (str): The label for the y-axis.
-        title (str): The title of the plot.
+        title (str): The title of the plot.evaluation_plots/CC_VS_SNR.png
         filename (str): The name of the file to save (e.g., 'CC_VS_SNR.png').
     """
     plt.figure(figsize=(10, 6))
@@ -226,63 +230,109 @@ def create_and_save_band_power_plots(band_power_data, bands, title, filename_pre
 # --- Main Logic for Generating Plots ---
 if __name__ == "__main__":
     print(f"Generating evaluation plots and saving to '{EVAL_PLOTS_DIR}'...")
-    
-    # A single, representative clean signal for the simulation
-    # In a real scenario, you'd load a dataset of clean epochs.
-    # Here, we generate a synthetic EEG-like signal for demonstration.
-    time_len_samples = SAMPLING_RATE * 5 # 5 seconds
-    t = np.linspace(0, 5, time_len_samples, endpoint=False)
-    clean_signal = np.sum([np.sin(2 * np.pi * f * t) for f in [4, 8, 12, 20, 40]], axis=0)
-    
-    # Lists to store metrics for plotting
+
+    # --- Load data using eeg_data_generator.py ---
+    # Update these paths to the correct absolute or relative location of your data files
+    DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'dataset'))
+    EEG_FILE = os.path.join(DATA_DIR, "EEG_all_epochs.npy")
+    EOG_FILE = os.path.join(DATA_DIR, "EOG_all_epochs.npy")
+    EMG_FILE = os.path.join(DATA_DIR, "EMG_all_epochs.npy")
+    SNR_RANGE_DB = [-14, 6]  # Min/max SNR for dataset, not used directly here
+
+    # Set EVAL_PLOTS_DIR to be inside the comparisions folder
+    EVAL_PLOTS_DIR = os.path.join(os.path.dirname(__file__), "comparisions/evaluation_plots")
+
+    # Load and normalize data
+    clean_eeg_np, eog_noise_np, emg_noise_np = prepare_eeg_data(EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB)
+
+    # Create dataset for benchmarking (one noisy variant per clean epoch per SNR)
+    # We'll loop over SNR_RANGE_DB_EVAL and for each SNR, generate noisy-clean pairs
+    time_len_samples = clean_eeg_np.shape[1]
     cc_scores = []
     rrmse_temporal_scores = []
     band_power_data = {band: [] for band in EEG_BANDS.keys()}
-    
-    # --- The Main Evaluation Loop ---
+
+    # For PSD plot at the end
+    example_noisy_signal = None
+    example_denoised_signal = None
+    example_clean_signal = None
+
     for snr_db in SNR_RANGE_DB_EVAL:
-        # Convert SNR from dB to linear scale
-        snr_linear = 10**(snr_db / 10)
-        
-        # Calculate required noise power
-        clean_power = np.mean(clean_signal**2)
-        noise_power = clean_power / snr_linear
-        
-        # Generate noise with the calculated power
-        noise = np.random.randn(len(clean_signal)) * np.sqrt(noise_power)
-        noisy_signal = clean_signal + noise
+        # For each SNR, generate one noisy-clean pair per clean epoch, then average metrics
+        cc_list = []
+        rrmse_list = []
+        band_power_bandwise = {band: [] for band in EEG_BANDS.keys()}
 
-        # Apply the Wiener filter
-        denoised_signal = wiener_filter_scipy(noisy_signal, mysize=None)
-        
-        # Calculate metrics for the current SNR level
-        cc = calculate_cc(denoised_signal, clean_signal)
-        rrmse_temporal = calculate_rrmse(denoised_signal, clean_signal)
-        
-        cc_scores.append(cc)
-        rrmse_temporal_scores.append(rrmse_temporal)
+        for i in range(clean_eeg_np.shape[0]):
+            clean_epoch = clean_eeg_np[i]
+            # Randomly pick a noise type and epoch
+            noise_type = np.random.choice(['eog', 'emg', 'both'])
+            if noise_type == 'eog' and eog_noise_np is not None:
+                noise_epoch = eog_noise_np[np.random.randint(len(eog_noise_np))]
+            elif noise_type == 'emg' and emg_noise_np is not None:
+                noise_epoch = emg_noise_np[np.random.randint(len(emg_noise_np))]
+            else:  # both or fallback
+                eog = eog_noise_np[np.random.randint(len(eog_noise_np))] if eog_noise_np is not None else np.zeros_like(clean_epoch)
+                emg = emg_noise_np[np.random.randint(len(emg_noise_np))] if emg_noise_np is not None else np.zeros_like(clean_epoch)
+                noise_epoch = eog + emg
 
-        # Calculate and store band power ratios
-        psd_freqs, psd_noisy = calculate_psd(noisy_signal, SAMPLING_RATE)
-        _, psd_denoised = calculate_psd(denoised_signal, SAMPLING_RATE)
-        _, psd_clean = calculate_psd(clean_signal, SAMPLING_RATE)
+            # Ensure noise is correct length
+            if len(noise_epoch) != time_len_samples:
+                if len(noise_epoch) > time_len_samples:
+                    noise_epoch = noise_epoch[:time_len_samples]
+                else:
+                    noise_epoch = np.concatenate((noise_epoch, np.zeros(time_len_samples - len(noise_epoch))))
 
+            # Add noise at the current SNR
+            clean_power = np.mean(clean_epoch**2)
+            noise_power = np.mean(noise_epoch**2)
+            if clean_power == 0 or noise_power == 0:
+                continue  # skip degenerate cases
+            snr_linear = 10**(snr_db / 10)
+            alpha = np.sqrt(clean_power / (snr_linear * noise_power))
+            noisy_signal = clean_epoch + alpha * noise_epoch
+
+            # Denoise
+            denoised_signal = wiener_filter_scipy(noisy_signal, mysize=None)
+
+            # Metrics
+            cc = calculate_cc(denoised_signal, clean_epoch)
+            rrmse_temporal = calculate_rrmse(denoised_signal, clean_epoch)
+            cc_list.append(cc)
+            rrmse_list.append(rrmse_temporal)
+
+            # Band power ratios
+            psd_freqs, psd_noisy = calculate_psd(noisy_signal, SAMPLING_RATE)
+            _, psd_denoised = calculate_psd(denoised_signal, SAMPLING_RATE)
+            _, psd_clean = calculate_psd(clean_epoch, SAMPLING_RATE)
+            for band in EEG_BANDS.keys():
+                noisy_power = calculate_band_power(psd_freqs, psd_noisy, band)
+                denoised_power = calculate_band_power(psd_freqs, psd_denoised, band)
+                clean_power_band = calculate_band_power(psd_freqs, psd_clean, band)
+                noisy_ratio = noisy_power / clean_power_band if clean_power_band > 0 else 0
+                denoised_ratio = denoised_power / clean_power_band if clean_power_band > 0 else 0
+                band_power_bandwise[band].append((noisy_ratio, denoised_ratio))
+
+            # Save example for PSD plot (use last SNR)
+            if snr_db == SNR_RANGE_DB_EVAL[-1] and i == 0:
+                example_noisy_signal = noisy_signal
+                example_denoised_signal = denoised_signal
+                example_clean_signal = clean_epoch
+
+        # Average metrics for this SNR
+        cc_scores.append(np.mean(cc_list))
+        rrmse_temporal_scores.append(np.mean(rrmse_list))
         for band in EEG_BANDS.keys():
-            noisy_power = calculate_band_power(psd_freqs, psd_noisy, band)
-            denoised_power = calculate_band_power(psd_freqs, psd_denoised, band)
-            clean_power_band = calculate_band_power(psd_freqs, psd_clean, band)
-            
-            # Avoid division by zero
-            noisy_ratio = noisy_power / clean_power_band if clean_power_band > 0 else 0
-            denoised_ratio = denoised_power / clean_power_band if clean_power_band > 0 else 0
-            
-            band_power_data[band].append((noisy_ratio, denoised_ratio))
-        
-        print(f"SNR: {snr_db} dB | CC: {cc:.4f} | RRMSE: {rrmse_temporal:.4f}")
+            noisy_ratios = [x[0] for x in band_power_bandwise[band]]
+            denoised_ratios = [x[1] for x in band_power_bandwise[band]]
+            band_power_data[band].append((
+                np.mean(noisy_ratios) if noisy_ratios else 0,
+                np.mean(denoised_ratios) if denoised_ratios else 0
+            ))
+
+        print(f"SNR: {snr_db} dB | CC: {cc_scores[-1]:.4f} | RRMSE: {rrmse_temporal_scores[-1]:.4f}")
 
     # --- Create and Save All Plots ---
-    
-    # CC vs. SNR plot
     create_and_save_plot(
         SNR_RANGE_DB_EVAL, 
         cc_scores, 
@@ -291,8 +341,6 @@ if __name__ == "__main__":
         'Correlation Coefficient vs. SNR',
         'CC_VS_SNR.png'
     )
-    
-    # RRMSE vs. SNR plot
     create_and_save_plot(
         SNR_RANGE_DB_EVAL, 
         rrmse_temporal_scores, 
@@ -301,26 +349,24 @@ if __name__ == "__main__":
         'RRMSE Temporal vs. SNR',
         'RRMSE_Temporal_vs_SNR.png'
     )
-    
-    # Create individual band power ratio plots
     create_and_save_band_power_plots(
         band_power_data, 
         list(EEG_BANDS.keys()), 
         'Overall Band Power Ratio vs. SNR',
         'overall'
     )
-    
-    # Create a PSD comparison plot for a specific SNR level (e.g., 0 dB)
-    psd_signals = {
-        'Original Clean Signal': clean_signal,
-        'Noisy Signal': noisy_signal,
-        'Denoised Signal (Wiener)': denoised_signal,
-    }
-    create_and_save_psd_plot(
-        psd_signals, 
-        SAMPLING_RATE, 
-        f'Power Spectral Density Comparison (SNR = {SNR_RANGE_DB_EVAL[-1]} dB)', # Use the highest SNR for a clear plot
-        'PSD_comparison_example.png'
-    )
+    # PSD comparison plot for the highest SNR
+    if example_clean_signal is not None:
+        psd_signals = {
+            'Original Clean Signal': example_clean_signal,
+            'Noisy Signal': example_noisy_signal,
+            'Denoised Signal (Wiener)': example_denoised_signal,
+        }
+        create_and_save_psd_plot(
+            psd_signals, 
+            SAMPLING_RATE, 
+            f'Power Spectral Density Comparison (SNR = {SNR_RANGE_DB_EVAL[-1]} dB)',
+            'PSD_comparison_example.png'
+        )
 
     print("\nAll evaluation plots have been generated and saved to the 'evaluation_plots' folder.")

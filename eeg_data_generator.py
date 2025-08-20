@@ -79,29 +79,50 @@ class EEGNoiseDataset(Dataset):
         # Select the clean EEG epoch for this index
         clean_epoch = self.clean_eeg[clean_idx]
 
-        # Randomly choose a noise type (EOG or EMG) for this pair
-        noise_type = np.random.choice(['eog', 'emg'])
+        # Randomly choose noise type: 'eog', 'emg', or 'both'
+        noise_type = np.random.choice(['eog', 'emg', 'both'])
 
-        # Select a random noise epoch from the chosen noise type
+        # Select noise(s) accordingly
         if noise_type == 'eog':
             noise_pool = self.eog_noise
-        else: # 'emg'
+            if len(noise_pool) == 0:
+                noise_epoch = np.zeros_like(clean_epoch)
+            else:
+                noise_epoch = noise_pool[np.random.randint(len(noise_pool))]
+        elif noise_type == 'emg':
             noise_pool = self.emg_noise
-
-        # Ensure there's noise available to sample
-        if len(noise_pool) == 0:
-            # Fallback if no noise of a chosen type is available
-            # In a robust system, you might log this or ensure both types are always present
-            print(f"Warning: No {noise_type} noise epochs available. Using zeros for noise.")
-            noise_epoch = np.zeros_like(clean_epoch) # Use a zero array as noise
-        else:
-            noise_epoch = noise_pool[np.random.randint(len(noise_pool))]
+            if len(noise_pool) == 0:
+                noise_epoch = np.zeros_like(clean_epoch)
+            else:
+                noise_epoch = noise_pool[np.random.randint(len(noise_pool))]
+        else:  # 'both'
+            # Combine EOG and EMG artifacts
+            if len(self.eog_noise) == 0 and len(self.emg_noise) == 0:
+                noise_epoch = np.zeros_like(clean_epoch)
+            else:
+                # If one pool is empty, just use the other
+                if len(self.eog_noise) == 0:
+                    noise_epoch = self.emg_noise[np.random.randint(len(self.emg_noise))]
+                elif len(self.emg_noise) == 0:
+                    noise_epoch = self.eog_noise[np.random.randint(len(self.eog_noise))]
+                else:
+                    eog_epoch = self.eog_noise[np.random.randint(len(self.eog_noise))]
+                    emg_epoch = self.emg_noise[np.random.randint(len(self.emg_noise))]
+                    # Ensure both are the correct length
+                    if len(eog_epoch) != self.num_samples_per_epoch:
+                        if len(eog_epoch) > self.num_samples_per_epoch:
+                            eog_epoch = eog_epoch[:self.num_samples_per_epoch]
+                        else:
+                            eog_epoch = np.concatenate((eog_epoch, np.zeros(self.num_samples_per_epoch - len(eog_epoch))))
+                    if len(emg_epoch) != self.num_samples_per_epoch:
+                        if len(emg_epoch) > self.num_samples_per_epoch:
+                            emg_epoch = emg_epoch[:self.num_samples_per_epoch]
+                        else:
+                            emg_epoch = np.concatenate((emg_epoch, np.zeros(self.num_samples_per_epoch - len(emg_epoch))))
+                    noise_epoch = eog_epoch + emg_epoch
 
         # Ensure the selected noise epoch has the same length as the clean epoch.
-        # This is crucial for element-wise addition.
         if len(noise_epoch) != self.num_samples_per_epoch:
-            # Simple truncation or padding to match the length.
-            # For real-world applications, consider more sophisticated resampling/padding.
             if len(noise_epoch) > self.num_samples_per_epoch:
                 noise_epoch = noise_epoch[:self.num_samples_per_epoch]
             else:
