@@ -199,8 +199,9 @@ def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples,
     for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
         ax = axes[idx]
         ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
-        ax.plot(noisy, label='Noisy EEG', color='red', alpha=0.7)
-        ax.plot(denoised, label='Denoised EEG', color='green', linestyle='--', alpha=0.8)
+        ax.plot(noisy, label='Noisy EEG', color='red', linestyle='--', alpha=0.7)
+        # Denoised EEG as solid line, plotted last (on top)
+        ax.plot(denoised, label='Denoised EEG', color='green', linestyle='-', alpha=0.8)
         ax.set_title(f"SNR {snr} dB")
         ax.set_xlabel("Sample Index")
         ax.set_ylabel("Amplitude")
@@ -328,6 +329,9 @@ def main():
     # --- New: Collect one sample per SNR for grouped plots ---
     snr_samples = []  # List of (snr, noisy, clean, denoised)
 
+    # --- New: Store band power ratios for all SNRs for plotting later ---
+    band_power_ratios_per_snr = {band: {'clean': [], 'noisy': [], 'denoised': []} for band in EEG_BANDS.keys()}
+
     print("\n--- Starting evaluation across different SNRs ---")
     for current_snr_db in snr_values_db:
         print(f"\nEvaluating at SNR: {current_snr_db} dB")
@@ -347,6 +351,11 @@ def main():
         batch_rrmse_spectral = []
         batch_cc = []
         batch_cosine_sim_power_ratios = []
+
+        # --- New: Band power ratio aggregation for each SNR ---
+        clean_band_ratios_agg = {band: [] for band in EEG_BANDS.keys()}
+        noisy_band_ratios_agg = {band: [] for band in EEG_BANDS.keys()}
+        denoised_band_ratios_agg = {band: [] for band in EEG_BANDS.keys()}
 
         # --- New: Save one example plot per SNR ---
         example_saved = False
@@ -380,6 +389,15 @@ def main():
                             )
                         )
 
+                    # --- Band power ratios for each SNR ---
+                    clean_ratios = calculate_band_power_ratios(clean_signals_np[i, 0, :], SAMPLING_RATE, EEG_BANDS)
+                    noisy_ratios = calculate_band_power_ratios(noisy_signals_np[i, 0, :], SAMPLING_RATE, EEG_BANDS)
+                    denoised_ratios = calculate_band_power_ratios(denoised_signals_np[i, 0, :], SAMPLING_RATE, EEG_BANDS)
+                    for band in EEG_BANDS.keys():
+                        clean_band_ratios_agg[band].append(clean_ratios[f'{band}_ratio'])
+                        noisy_band_ratios_agg[band].append(noisy_ratios[f'{band}_ratio'])
+                        denoised_band_ratios_agg[band].append(denoised_ratios[f'{band}_ratio'])
+
                     # --- Collect one sample per SNR for grouped plots ---
                     if not example_saved:
                         snr_samples.append((
@@ -398,6 +416,44 @@ def main():
             # If we are at -14dB, aggregate the cosine similarity for this SNR
             if current_snr_db == -14:
                 cosine_sim_power_ratios_at_neg14db.append(np.mean(batch_cosine_sim_power_ratios))
+
+        # --- Save band power ratio bar plots for each SNR ---
+        for band in EEG_BANDS.keys():
+            avg_clean_ratio = np.mean(clean_band_ratios_agg[band])
+            avg_noisy_ratio = np.mean(noisy_band_ratios_agg[band])
+            avg_denoised_ratio = np.mean(denoised_band_ratios_agg[band])
+            # --- Instead of plotting here, store for later ---
+            band_power_ratios_per_snr[band]['clean'].append(avg_clean_ratio)
+            band_power_ratios_per_snr[band]['noisy'].append(avg_noisy_ratio)
+            band_power_ratios_per_snr[band]['denoised'].append(avg_denoised_ratio)
+
+    # --- After SNR loop: Plot band power ratios vs SNR for each band as bar chart ---
+    for band in EEG_BANDS.keys():
+        x = np.arange(len(snr_values_db))
+        width = 0.25
+        clean_vals = band_power_ratios_per_snr[band]['clean']
+        noisy_vals = band_power_ratios_per_snr[band]['noisy']
+        denoised_vals = band_power_ratios_per_snr[band]['denoised']
+        max_val = max(
+            max(clean_vals) if clean_vals else 0,
+            max(noisy_vals) if noisy_vals else 0,
+            max(denoised_vals) if denoised_vals else 0,
+        )
+        plt.figure(figsize=(10, 6))
+        plt.bar(x - width, clean_vals, width, label='Clean', color='blue')
+        plt.bar(x, noisy_vals, width, label='Noisy', color='red')
+        plt.bar(x + width, denoised_vals, width, label='Denoised', color='green')
+        plt.title(f'Overall {band.capitalize()} Band Power Ratio vs SNR')
+        plt.xlabel('SNR (dB)')
+        plt.ylabel('Power Ratio')
+        plt.ylim(0, max_val * 1.05 if max_val > 0 else 1)
+        plt.xticks(x, [str(snr) for snr in snr_values_db])
+        plt.grid(axis='y')
+        plt.legend()
+        fname = f'overall_{band}_power_ratio_vs_snr.png'
+        plt.savefig(os.path.join(EVAL_PLOTS_DIR, fname))
+        plt.close()
+        print(f"Saved overall {band.capitalize()} band power ratio vs SNR bar chart to '{os.path.join(EVAL_PLOTS_DIR, fname)}'")
 
     # --- New: Save grouped plots for SNRs in pairs ---
     group_size = 2
@@ -490,16 +546,6 @@ def main():
                 denoised_band_ratios_agg_overall[band].append(denoised_ratios_batch[f'{band}_ratio'])
             
             if batch_idx == 0: # Only plot one example from the overall test set
-                # --- Fix: Use plot_multi_snr_samples for overall test set example ---
-                plot_multi_snr_samples(
-                    snrs=[1, 2, 3, 4],  # Dummy SNRs for labeling, replace as needed
-                    noisy_samples=[noisy_signals_np[i, 0, :] for i in range(4)],
-                    clean_samples=[clean_signals_np[i, 0, :] for i in range(4)],
-                    denoised_samples=[denoised_signals_np[i, 0, :] for i in range(4)],
-                    save_path=os.path.join(EVAL_PLOTS_DIR, "overall_test_denoising_example.png")
-                )
-                print(f"Saved overall example denoising plot to '{os.path.join(EVAL_PLOTS_DIR, 'overall_test_denoising_example.png')}'")
-                
                 # Plot PSD comparison for one sample from this batch
                 plot_psd_comparison(
                     clean_signals_np[PSD_SAMPLE_INDEX_FOR_VIZ, 0, :], # Access specific sample and channel
@@ -527,18 +573,6 @@ def main():
         print(f"    Clean: {avg_clean_ratio:.4f}")
         print(f"    Noisy: {avg_noisy_ratio:.4f}")
         print(f"    Denoised: {avg_denoised_ratio:.4f}")
-        
-        labels = ['Clean', 'Noisy', 'Denoised']
-        values = [avg_clean_ratio, avg_noisy_ratio, avg_denoised_ratio]
-        
-        plt.figure(figsize=(6, 4))
-        plt.bar(labels, values, color=['blue', 'red', 'green'])
-        plt.title(f'Overall {band.capitalize()} Band Power Ratio')
-        plt.ylabel('Power Ratio')
-        plt.ylim(0, 1)
-        plt.savefig(os.path.join(EVAL_PLOTS_DIR, f'overall_{band}_power_ratio_bar.png'))
-        plt.close()
-        print(f"    Saved overall {band.capitalize()} band power ratio plot to '{os.path.join(EVAL_PLOTS_DIR, f'overall_{band}_power_ratio_bar.png')}'")
 
     # Report Cosine Similarity of Power Ratios at -14dB
     if cosine_sim_power_ratios_at_neg14db:
