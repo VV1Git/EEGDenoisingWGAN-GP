@@ -146,18 +146,10 @@ def calculate_rrmse_spectral(denoised_signal, clean_signal, sampling_rate):
 def create_and_save_plot(x, y, xlabel, ylabel, title, filename):
     """
     Creates a line plot and saves it to the specified directory.
-    
-    Args:
-        x (list or np.ndarray): The x-axis data.
-        y (list or np.ndarray): The y-axis data.
-        xlabel (str): The label for the x-axis.
-        ylabel (str): The label for the y-axis.
-        title (str): The title of the plot.evaluation_plots/CC_VS_SNR.png
-        filename (str): The name of the file to save (e.g., 'CC_VS_SNR.png').
     """
     plt.figure(figsize=(10, 6))
     plt.plot(x, y, marker='o', linestyle='-', color='b')
-    plt.title(title)
+    plt.title("Wiener Filter")
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.grid(True)
@@ -173,19 +165,13 @@ def create_and_save_plot(x, y, xlabel, ylabel, title, filename):
 def create_and_save_psd_plot(signals_dict, fs, title, filename):
     """
     Creates a PSD plot comparing multiple signals and saves it.
-    
-    Args:
-        signals_dict (dict): A dictionary mapping signal names to their data arrays.
-        fs (float): The sampling frequency.
-        title (str): The title of the plot.
-        filename (str): The name of the file to save (e.g., 'psd_comparison.png').
     """
     plt.figure(figsize=(10, 6))
     for name, signal_data in signals_dict.items():
         f, Pxx = calculate_psd(signal_data, fs)
         plt.semilogy(f, Pxx, label=name)
     
-    plt.title(title)
+    plt.title("Wiener Filter")
     plt.xlabel('Frequency (Hz)')
     plt.ylabel('Power/Frequency (dB/Hz)')
     plt.legend()
@@ -202,13 +188,6 @@ def create_and_save_psd_plot(signals_dict, fs, title, filename):
 def create_and_save_band_power_plots(band_power_data, bands, title, filename_prefix):
     """
     Creates bar plots for band power ratios and saves them.
-    
-    Args:
-        band_power_data (dict): A dictionary where keys are band names and
-                                values are a list of tuples (noisy_ratio, denoised_ratio).
-        bands (list): A list of band names to plot.
-        title (str): The overall title for the plot.
-        filename_prefix (str): The prefix for the saved files.
     """
     os.makedirs(EVAL_PLOTS_DIR, exist_ok=True)
     
@@ -224,7 +203,7 @@ def create_and_save_band_power_plots(band_power_data, bands, title, filename_pre
         ax.bar(x - width/2, noisy_ratios, width, label='Noisy')
         ax.bar(x + width/2, denoised_ratios, width, label='Denoised')
         
-        ax.set_title(f'Overall {band.capitalize()} Power Ratio vs. SNR')
+        ax.set_title("Wiener Filter")
         ax.set_xlabel('SNR (dB)')
         ax.set_ylabel(f'{band.capitalize()} Power Ratio')
         ax.set_xticks(x)
@@ -250,17 +229,16 @@ def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples,
         save_path (str): Path to save the combined plot.
     """
     num = len(snrs)
-    fig, axes = plt.subplots(num, 1, figsize=(15, 3 * num), sharex=True)
+    fig, axes = plt.subplots(num, 1, figsize=(10, 3 * num), sharex=True)
+    fig.suptitle("Wiener Filter", fontsize=16)
     if num == 1:
         axes = [axes]
-    fig.suptitle("Sample Denoising Comparison for SNRs: " + ", ".join([str(s) for s in snrs]), fontsize=16)
     for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
         ax = axes[idx]
         ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
         ax.plot(noisy, label='Noisy EEG', color='red', linestyle='--', alpha=0.7)
-        # Denoised EEG as solid line, plotted last (on top)
         ax.plot(denoised, label='Denoised EEG', color='green', linestyle='-', alpha=0.8)
-        ax.set_title(f"SNR {snr} dB")
+        ax.set_title("Wiener Filter")
         ax.set_xlabel("Sample Index")
         ax.set_ylabel("Amplitude")
         ax.legend()
@@ -419,7 +397,7 @@ if __name__ == "__main__":
     # RRMSE Temporal vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(SNR_RANGE_DB_EVAL, rrmse_temporal_scores, marker='o', linestyle='-', color='blue')
-    plt.title('RRMSE Temporal vs. Input SNR')
+    plt.title("Wiener Filter")
     plt.xlabel('SNR (dB)')
     plt.ylabel('RRMSE Temporal')
     plt.grid(True)
@@ -429,7 +407,7 @@ if __name__ == "__main__":
     # RRMSE Spectral vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(SNR_RANGE_DB_EVAL, rrmse_spectral_scores, marker='o', linestyle='-', color='blue')
-    plt.title('RRMSE Spectral vs. Input SNR')
+    plt.title("Wiener Filter")
     plt.xlabel('SNR (dB)')
     plt.ylabel('RRMSE Spectral')
     plt.grid(True)
@@ -439,7 +417,7 @@ if __name__ == "__main__":
     # CC vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(SNR_RANGE_DB_EVAL, cc_scores, marker='o', linestyle='-', color='blue')
-    plt.title('Pearson\'s CC vs. Input SNR')
+    plt.title("Wiener Filter")
     plt.xlabel('SNR (dB)')
     plt.ylabel('Pearson\'s CC')
     plt.grid(True)
@@ -462,7 +440,7 @@ if __name__ == "__main__":
         plt.bar(x - width, clean_vals, width, label='Clean', color='blue')
         plt.bar(x, noisy_vals, width, label='Noisy', color='red')
         plt.bar(x + width, denoised_vals, width, label='Denoised', color='green')
-        plt.title(f'Overall {band.capitalize()} Band Power Ratio vs SNR')
+        plt.title("Wiener Filter")
         plt.xlabel('SNR (dB)')
         plt.ylabel('Power Ratio')
         plt.ylim(0, max_val * 1.05 if max_val > 0 else 1)

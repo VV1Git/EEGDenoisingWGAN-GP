@@ -40,17 +40,15 @@ def calculate_cc(clean_signal, denoised_signal):
 
 def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path):
     num = len(snrs)
-    fig, axes = plt.subplots(num, 1, figsize=(15, 3 * num), sharex=True)
+    fig, axes = plt.subplots(num, 1, figsize=(10, 3 * num), sharex=True)
     if num == 1:
         axes = [axes]
-    fig.suptitle("ICA Sample Denoising Comparison for SNRs: " + ", ".join([str(s) for s in snrs]), fontsize=16)
     for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
         ax = axes[idx]
         ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
         ax.plot(noisy, label='Noisy EEG', color='red', linestyle='--', alpha=0.7)
-        # Denoised EEG as solid line, plotted last (on top)
         ax.plot(denoised, label='ICA Denoised EEG', color='green', linestyle='-', alpha=0.8)
-        ax.set_title(f"SNR {snr} dB")
+        ax.set_title("ICA")
         ax.set_xlabel("Sample Index")
         ax.set_ylabel("Amplitude")
         ax.legend()
@@ -89,7 +87,6 @@ def calculate_band_power_ratios(signal, sampling_rate, bands):
 
 def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sampling_rate, bands, save_path=None):
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-    fig.suptitle('Power Spectral Density Comparison', fontsize=16)
     signal_types = {
         'Clean Signal': clean_signal_np.flatten(),
         'Contaminated Signal': noisy_signal_np.flatten(),
@@ -106,7 +103,7 @@ def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sa
         ax = axes[i]
         f, Pxx = welch(signal, fs=sampling_rate, nperseg=sampling_rate, return_onesided=True)
         ax.plot(f, Pxx, color='blue')
-        ax.set_title(title)
+        ax.set_title("ICA")
         ax.set_xlabel('Frequency (Hz)')
         if i == 0:
             ax.set_ylabel('Power (V**2/Hz)')
@@ -248,7 +245,7 @@ def main():
         plt.bar(x - width, clean_vals, width, label='Clean', color='blue')
         plt.bar(x, noisy_vals, width, label='Noisy', color='red')
         plt.bar(x + width, denoised_vals, width, label='Denoised', color='green')
-        plt.title(f'Overall {band.capitalize()} Band Power Ratio vs SNR')
+        plt.title("ICA")
         plt.xlabel('SNR (dB)')
         plt.ylabel('Power Ratio')
         plt.ylim(0, max_val * 1.05 if max_val > 0 else 1)

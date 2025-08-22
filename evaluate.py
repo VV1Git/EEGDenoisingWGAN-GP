@@ -183,26 +183,17 @@ def calculate_cosine_similarity_power_ratios(clean_signal_np, denoised_signal_np
 def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path):
     """
     Plots sample denoising results for multiple SNRs in a single figure.
-
-    Args:
-        snrs (list): List of SNR values (e.g., [-14, -12]).
-        noisy_samples (list): List of 1D numpy arrays (noisy signals).
-        clean_samples (list): List of 1D numpy arrays (clean signals).
-        denoised_samples (list): List of 1D numpy arrays (denoised signals).
-        save_path (str): Path to save the combined plot.
     """
     num = len(snrs)
-    fig, axes = plt.subplots(num, 1, figsize=(15, 3 * num), sharex=True)
+    fig, axes = plt.subplots(num, 1, figsize=(20, 3 * num), sharex=True)
     if num == 1:
         axes = [axes]
-    fig.suptitle("Sample Denoising Comparison for SNRs: " + ", ".join([str(s) for s in snrs]), fontsize=16)
     for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
         ax = axes[idx]
         ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
         ax.plot(noisy, label='Noisy EEG', color='red', linestyle='--', alpha=0.7)
-        # Denoised EEG as solid line, plotted last (on top)
         ax.plot(denoised, label='Denoised EEG', color='green', linestyle='-', alpha=0.8)
-        ax.set_title(f"SNR {snr} dB")
+        ax.set_title("AR-WGAN")
         ax.set_xlabel("Sample Index")
         ax.set_ylabel("Amplitude")
         ax.legend()
@@ -215,24 +206,13 @@ def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sa
     """
     Plots and compares the Power Spectral Density (PSD) of clean, noisy, and denoised signals,
     highlighting EEG frequency bands.
-
-    Args:
-        clean_signal_np (np.ndarray): A single clean EEG signal (1D array).
-        noisy_signal_np (np.ndarray): A single noisy EEG signal (1D array).
-        denoised_signal_np (np.ndarray): A single denoised EEG signal (1D array).
-        sampling_rate (int): The sampling rate of the EEG signal (Hz).
-        bands (dict): Dictionary defining frequency bands.
-        save_path (str, optional): If provided, the plot will be saved to this path.
     """
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-    fig.suptitle('Power Spectral Density Comparison', fontsize=16)
-
     signal_types = {
         'Clean Signal': clean_signal_np.flatten(),
         'Contaminated Signal': noisy_signal_np.flatten(),
         'Denoised Signal': denoised_signal_np.flatten()
     }
-    
     band_colors = {
         'delta': 'yellow',
         'theta': 'orange',
@@ -240,33 +220,24 @@ def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sa
         'beta': 'skyblue',
         'gamma': 'plum'
     }
-
     for i, (title, signal) in enumerate(signal_types.items()):
         ax = axes[i]
         f, Pxx = welch(signal, fs=sampling_rate, nperseg=sampling_rate, return_onesided=True)
-        
         ax.plot(f, Pxx, color='blue')
-        ax.set_title(title)
+        ax.set_title("AR-WGAN")
         ax.set_xlabel('Frequency (Hz)')
-        if i == 0: # Only set ylabel for the first subplot
+        if i == 0:
             ax.set_ylabel('Power (V**2/Hz)')
-        
-        # Highlight frequency bands
         for band_name, (low_freq, high_freq) in bands.items():
             ax.axvspan(low_freq, high_freq, color=band_colors[band_name], alpha=0.3, label=band_name.capitalize())
-        
-        ax.set_xlim(0, 80) # Limit frequency range for better visualization
+        ax.set_xlim(0, 80)
         ax.grid(True, linestyle=':', alpha=0.6)
-        # Add a legend only to the first plot to avoid redundancy
         if i == 0:
             handles, labels = ax.get_legend_handles_labels()
-            # Sort legend labels by frequency band order
             sorted_labels = [b.capitalize() for b in bands.keys()]
             order = [labels.index(l) for l in sorted_labels if l in labels]
             ax.legend([handles[idx] for idx in order], [labels[idx] for idx in order], loc='upper right', fontsize='small')
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to prevent suptitle overlap
-
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     if save_path:
         plt.savefig(save_path)
         plt.close(fig)
@@ -439,11 +410,11 @@ def main():
             max(noisy_vals) if noisy_vals else 0,
             max(denoised_vals) if denoised_vals else 0,
         )
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(20, 6))  # width doubled from 10 to 20
         plt.bar(x - width, clean_vals, width, label='Clean', color='blue')
         plt.bar(x, noisy_vals, width, label='Noisy', color='red')
         plt.bar(x + width, denoised_vals, width, label='Denoised', color='green')
-        plt.title(f'Overall {band.capitalize()} Band Power Ratio vs SNR')
+        plt.title("AR-WGAN")
         plt.xlabel('SNR (dB)')
         plt.ylabel('Power Ratio')
         plt.ylim(0, max_val * 1.05 if max_val > 0 else 1)
@@ -469,9 +440,9 @@ def main():
 
     print("\n--- Plotting SNR vs. Metrics ---")
     # Plot RRMSE Temporal vs SNR
-    plt.figure(figsize=(6, 5))
+    plt.figure(figsize=(12, 5))
     plt.plot(snr_values_db, rrmse_temporal_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title('RRMSE Temporal vs. Input SNR')
+    plt.title("AR-WGAN")
     plt.xlabel('SNR (dB)')
     plt.ylabel('RRMSE Temporal')
     plt.grid(True)
@@ -480,9 +451,9 @@ def main():
     print(f"Saved RRMSE Temporal plot to '{os.path.join(EVAL_PLOTS_DIR, 'RRMSE_Temporal_vs_SNR.png')}'")
 
     # Plot RRMSE Spectral vs SNR
-    plt.figure(figsize=(6, 5))
+    plt.figure(figsize=(12, 5))
     plt.plot(snr_values_db, rrmse_spectral_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title('RRMSE Spectral vs. Input SNR')
+    plt.title("AR-WGAN")
     plt.xlabel('SNR (dB)')
     plt.ylabel('RRMSE Spectral')
     plt.grid(True)
@@ -491,9 +462,9 @@ def main():
     print(f"Saved RRMSE Spectral plot to '{os.path.join(EVAL_PLOTS_DIR, 'RRMSE_Spectral_vs_SNR.png')}'")
 
     # Plot CC vs SNR
-    plt.figure(figsize=(6, 5))
+    plt.figure(figsize=(12, 5))
     plt.plot(snr_values_db, cc_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title('Pearson\'s CC vs. Input SNR')
+    plt.title("AR-WGAN")
     plt.xlabel('SNR (dB)')
     plt.ylabel('Pearson\'s CC')
     plt.grid(True)
