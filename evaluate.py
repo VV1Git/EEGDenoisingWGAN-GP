@@ -186,6 +186,7 @@ def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples,
     """
     num = len(snrs)
     fig, axes = plt.subplots(num, 1, figsize=(20, 3 * num), sharex=True)
+    # No suptitle
     if num == 1:
         axes = [axes]
     for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
@@ -193,12 +194,13 @@ def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples,
         ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
         ax.plot(noisy, label='Noisy EEG', color='red', linestyle='--', alpha=0.7)
         ax.plot(denoised, label='Denoised EEG', color='green', linestyle='-', alpha=0.8)
-        ax.set_title("AR-WGAN")
-        ax.set_xlabel("Sample Index")
-        ax.set_ylabel("Amplitude")
+        ax.set_title("AR-WGAN", fontsize=24)  # Method name as title
+        ax.set_xlabel("Sample Index", fontsize=18)
+        ax.set_ylabel("Amplitude", fontsize=18)
         ax.legend()
         ax.grid(True)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        # ax.set_yscale('log')  # Remove log scale
+    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
     plt.savefig(save_path)
     plt.close(fig)
 
@@ -208,11 +210,9 @@ def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sa
     highlighting EEG frequency bands.
     """
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-    signal_types = {
-        'Clean Signal': clean_signal_np.flatten(),
-        'Contaminated Signal': noisy_signal_np.flatten(),
-        'Denoised Signal': denoised_signal_np.flatten()
-    }
+    fig.suptitle("AR-WGAN", fontsize=24)  # Add overall title
+    titles = ["Clean", "Noisy", "Denoised"]
+    signals = [clean_signal_np.flatten(), noisy_signal_np.flatten(), denoised_signal_np.flatten()]
     band_colors = {
         'delta': 'yellow',
         'theta': 'orange',
@@ -220,24 +220,24 @@ def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sa
         'beta': 'skyblue',
         'gamma': 'plum'
     }
-    for i, (title, signal) in enumerate(signal_types.items()):
-        ax = axes[i]
+    for i, (ax, signal, subtitle) in enumerate(zip(axes, signals, titles)):
         f, Pxx = welch(signal, fs=sampling_rate, nperseg=sampling_rate, return_onesided=True)
         ax.plot(f, Pxx, color='blue')
-        ax.set_title("AR-WGAN")
-        ax.set_xlabel('Frequency (Hz)')
+        ax.set_title(subtitle)
+        ax.set_xlabel('Frequency (Hz)', fontsize=18)
         if i == 0:
-            ax.set_ylabel('Power (V**2/Hz)')
+            ax.set_ylabel('Power (V**2/Hz)', fontsize=18)
         for band_name, (low_freq, high_freq) in bands.items():
             ax.axvspan(low_freq, high_freq, color=band_colors[band_name], alpha=0.3, label=band_name.capitalize())
         ax.set_xlim(0, 80)
         ax.grid(True, linestyle=':', alpha=0.6)
+        # ax.set_yscale('log')  # Remove log scale
         if i == 0:
             handles, labels = ax.get_legend_handles_labels()
             sorted_labels = [b.capitalize() for b in bands.keys()]
             order = [labels.index(l) for l in sorted_labels if l in labels]
-            ax.legend([handles[idx] for idx in order], [labels[idx] for idx in order], loc='upper right', fontsize='small')
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            ax.legend([handles[idx] for idx in order], [labels[idx] for idx in order], loc='upper right', fontsize=15)
+    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
     if save_path:
         plt.savefig(save_path)
         plt.close(fig)
@@ -299,6 +299,7 @@ def main():
 
     # --- New: Collect one sample per SNR for grouped plots ---
     snr_samples = []  # List of (snr, noisy, clean, denoised)
+    sample_saved_for_minus6db = False
 
     # --- New: Store band power ratios for all SNRs for plotting later ---
     band_power_ratios_per_snr = {band: {'clean': [], 'noisy': [], 'denoised': []} for band in EEG_BANDS.keys()}
@@ -371,12 +372,13 @@ def main():
 
                     # --- Collect one sample per SNR for grouped plots ---
                     if not example_saved:
-                        snr_samples.append((
-                            current_snr_db,
-                            noisy_signals_np[i, 0, :],
-                            clean_signals_np[i, 0, :],
-                            denoised_signals_np[i, 0, :]
-                        ))
+                        # Only save -6dB sample for multi_snr_sample_denoising
+                        if current_snr_db == -6 and not sample_saved_for_minus6db:
+                            snr_samples = [(current_snr_db,
+                                            noisy_signals_np[i, 0, :],
+                                            clean_signals_np[i, 0, :],
+                                            denoised_signals_np[i, 0, :])]
+                            sample_saved_for_minus6db = True
                         example_saved = True
             
             # Aggregate metrics for the current SNR
@@ -414,9 +416,9 @@ def main():
         plt.bar(x - width, clean_vals, width, label='Clean', color='blue')
         plt.bar(x, noisy_vals, width, label='Noisy', color='red')
         plt.bar(x + width, denoised_vals, width, label='Denoised', color='green')
-        plt.title("AR-WGAN")
-        plt.xlabel('SNR (dB)')
-        plt.ylabel('Power Ratio')
+        plt.title("AR-WGAN", fontsize=24)
+        plt.xlabel('SNR (dB)', fontsize=18)
+        plt.ylabel('Power Ratio', fontsize=18)
         plt.ylim(0, max_val * 1.05 if max_val > 0 else 1)
         plt.xticks(x, [str(snr) for snr in snr_values_db])
         plt.grid(axis='y')
@@ -426,25 +428,23 @@ def main():
         plt.close()
         print(f"Saved overall {band.capitalize()} band power ratio vs SNR bar chart to '{os.path.join(EVAL_PLOTS_DIR, fname)}'")
 
-    # --- New: Save grouped plots for SNRs in pairs ---
-    group_size = 2
-    for idx in range(0, len(snr_samples), group_size):
-        group = snr_samples[idx:idx+group_size]
-        snrs = [item[0] for item in group]
-        noisy_samples = [item[1] for item in group]
-        clean_samples = [item[2] for item in group]
-        denoised_samples = [item[3] for item in group]
-        save_path = os.path.join(EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_{'_'.join(str(s) for s in snrs)}.png")
+    # Only save the -6dB grouped sample plot
+    if snr_samples:
+        snrs = [item[0] for item in snr_samples]
+        noisy_samples = [item[1] for item in snr_samples]
+        clean_samples = [item[2] for item in snr_samples]
+        denoised_samples = [item[3] for item in snr_samples]
+        save_path = os.path.join(EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_-6.png")
         plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path)
-        print(f"Saved grouped sample denoising plot for SNRs {snrs} to '{save_path}'")
+        print(f"Saved grouped sample denoising plot for SNR -6 dB to '{save_path}'")
 
     print("\n--- Plotting SNR vs. Metrics ---")
     # Plot RRMSE Temporal vs SNR
     plt.figure(figsize=(12, 5))
     plt.plot(snr_values_db, rrmse_temporal_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title("AR-WGAN")
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('RRMSE Temporal')
+    plt.title("AR-WGAN", fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('RRMSE Temporal', fontsize=18)
     plt.grid(True)
     plt.savefig(os.path.join(EVAL_PLOTS_DIR, 'RRMSE_Temporal_vs_SNR.png'))
     plt.close()
@@ -453,9 +453,9 @@ def main():
     # Plot RRMSE Spectral vs SNR
     plt.figure(figsize=(12, 5))
     plt.plot(snr_values_db, rrmse_spectral_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title("AR-WGAN")
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('RRMSE Spectral')
+    plt.title("AR-WGAN", fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('RRMSE Spectral', fontsize=18)
     plt.grid(True)
     plt.savefig(os.path.join(EVAL_PLOTS_DIR, 'RRMSE_Spectral_vs_SNR.png'))
     plt.close()
@@ -464,9 +464,9 @@ def main():
     # Plot CC vs SNR
     plt.figure(figsize=(12, 5))
     plt.plot(snr_values_db, cc_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title("AR-WGAN")
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('Pearson\'s CC')
+    plt.title("AR-WGAN", fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('Pearson\'s CC', fontsize=18)
     plt.grid(True)
     plt.savefig(os.path.join(EVAL_PLOTS_DIR, 'CC_vs_SNR.png'))
     plt.close()

@@ -149,11 +149,13 @@ def create_and_save_plot(x, y, xlabel, ylabel, title, filename):
     """
     plt.figure(figsize=(10, 6))
     plt.plot(x, y, marker='o', linestyle='-', color='b')
-    plt.title("Wiener Filter")
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
+    plt.title("Wiener Filter", fontsize=24, y=1.01)
+    plt.xlabel(xlabel, fontsize=18)
+    plt.ylabel(ylabel, fontsize=18)
     plt.grid(True)
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
+    plt.xticks()
+    plt.yticks()
     
     # Ensure the directory exists
     os.makedirs(EVAL_PLOTS_DIR, exist_ok=True)
@@ -169,17 +171,16 @@ def create_and_save_psd_plot(signals_dict, fs, title, filename):
     plt.figure(figsize=(10, 6))
     for name, signal_data in signals_dict.items():
         f, Pxx = calculate_psd(signal_data, fs)
-        plt.semilogy(f, Pxx, label=name)
-    
-    plt.title("Wiener Filter")
-    plt.xlabel('Frequency (Hz)')
-    plt.ylabel('Power/Frequency (dB/Hz)')
+        plt.plot(f, Pxx, label=name)  # No log scale
+    plt.title("Wiener Filter", fontsize=24, y=1.01)
+    plt.xlabel('Frequency (Hz)', fontsize=18)
+    plt.ylabel('Power/Frequency (dB/Hz)', fontsize=18)
     plt.legend()
     plt.grid(True)
-    plt.tight_layout()
-    
-    # Ensure the directory exists
-    os.makedirs(EVAL_PLOTS_DIR, exist_ok=True)
+    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
+    # plt.yscale('log')  # Removed log scale
+    plt.xticks()
+    plt.yticks()
     save_path = join(EVAL_PLOTS_DIR, filename)
     plt.savefig(save_path)
     print(f"PSD plot saved to {save_path}")
@@ -203,14 +204,16 @@ def create_and_save_band_power_plots(band_power_data, bands, title, filename_pre
         ax.bar(x - width/2, noisy_ratios, width, label='Noisy')
         ax.bar(x + width/2, denoised_ratios, width, label='Denoised')
         
-        ax.set_title("Wiener Filter")
-        ax.set_xlabel('SNR (dB)')
-        ax.set_ylabel(f'{band.capitalize()} Power Ratio')
+        ax.set_title("Wiener Filter", fontsize=24, y=1.01)
+        ax.set_xlabel('SNR (dB)', fontsize=18)
+        ax.set_ylabel(f'{band.capitalize()} Power Ratio', fontsize=18)
         ax.set_xticks(x)
         ax.set_xticklabels(snrs)
         ax.legend()
         plt.grid(True, axis='y')
-        plt.tight_layout()
+        plt.tight_layout(rect=[0, 0.04, 1, 0.97])
+        plt.xticks()
+        plt.yticks()
         
         save_path = join(EVAL_PLOTS_DIR, f'overall_{band}_power_ratio.png')
         plt.savefig(save_path)
@@ -220,17 +223,10 @@ def create_and_save_band_power_plots(band_power_data, bands, title, filename_pre
 def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path):
     """
     Plots sample denoising results for multiple SNRs in a single figure.
-
-    Args:
-        snrs (list): List of SNR values (e.g., [-14, -12]).
-        noisy_samples (list): List of 1D numpy arrays (noisy signals).
-        clean_samples (list): List of 1D numpy arrays (clean signals).
-        denoised_samples (list): List of 1D numpy arrays (denoised signals).
-        save_path (str): Path to save the combined plot.
     """
     num = len(snrs)
     fig, axes = plt.subplots(num, 1, figsize=(10, 3 * num), sharex=True)
-    fig.suptitle("Wiener Filter", fontsize=16)
+    # No suptitle
     if num == 1:
         axes = [axes]
     for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
@@ -238,12 +234,15 @@ def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples,
         ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
         ax.plot(noisy, label='Noisy EEG', color='red', linestyle='--', alpha=0.7)
         ax.plot(denoised, label='Denoised EEG', color='green', linestyle='-', alpha=0.8)
-        ax.set_title("Wiener Filter")
-        ax.set_xlabel("Sample Index")
-        ax.set_ylabel("Amplitude")
+        ax.set_title("Wiener Filter", fontsize=24)  # Method name as title
+        ax.set_xlabel("Sample Index", fontsize=18)
+        ax.set_ylabel("Amplitude", fontsize=18)
         ax.legend()
         ax.grid(True)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        # ax.set_yscale('log')  # Remove log scale
+        plt.xticks()
+        plt.yticks()
+    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
     plt.savefig(save_path)
     plt.close(fig)
 
@@ -272,6 +271,7 @@ if __name__ == "__main__":
     band_power_ratios_per_snr = {band: {'clean': [], 'noisy': [], 'denoised': []} for band in EEG_BANDS.keys()}
     snr_samples = []  # List of (snr, noisy, clean, denoised)
     example_psd_saved = False
+    sample_saved_for_minus6db = False
 
     for snr_db in SNR_RANGE_DB_EVAL:
         cc_list = []
@@ -342,12 +342,15 @@ if __name__ == "__main__":
 
             # Save one example per SNR for grouped plots and PSD
             if not example_saved:
-                snr_samples.append((snr_db, noisy_signal, clean_epoch, denoised_signal))
+                # Only save -6dB sample for multi_snr_sample_denoising
+                if snr_db == -6 and not sample_saved_for_minus6db:
+                    snr_samples = [(snr_db, noisy_signal, clean_epoch, denoised_signal)]
+                    sample_saved_for_minus6db = True
                 # Save PSD and grouped plot for the first SNR only (like evaluate.py)
                 if not example_psd_saved:
                     # PSD comparison plot
                     fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-                    fig.suptitle('Power Spectral Density Comparison', fontsize=16)
+                    fig.suptitle('Wiener Filter', fontsize=24)  # Add overall title
                     signal_types = {
                         'Clean Signal': clean_epoch,
                         'Contaminated Signal': noisy_signal,
@@ -365,13 +368,14 @@ if __name__ == "__main__":
                         f, Pxx = calculate_psd(sig, SAMPLING_RATE)
                         ax.plot(f, Pxx, color='blue')
                         ax.set_title(title)
-                        ax.set_xlabel('Frequency (Hz)')
+                        ax.set_xlabel('Frequency (Hz)', fontsize=18)
                         if j == 0:
-                            ax.set_ylabel('Power (V**2/Hz)')
+                            ax.set_ylabel('Power (V**2/Hz)', fontsize=18)
                         for band_name, (low, high) in EEG_BANDS.items():
                             ax.axvspan(low, high, color=band_colors[band_name], alpha=0.3, label=band_name.capitalize())
                         ax.set_xlim(0, 80)
                         ax.grid(True, linestyle=':', alpha=0.6)
+                        # ax.set_yscale('log')  # Remove log scale
                         if j == 0:
                             handles, labels = ax.get_legend_handles_labels()
                             sorted_labels = [b.capitalize() for b in EEG_BANDS.keys()]
@@ -397,9 +401,9 @@ if __name__ == "__main__":
     # RRMSE Temporal vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(SNR_RANGE_DB_EVAL, rrmse_temporal_scores, marker='o', linestyle='-', color='blue')
-    plt.title("Wiener Filter")
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('RRMSE Temporal')
+    plt.title("Wiener Filter", fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('RRMSE Temporal', fontsize=18)
     plt.grid(True)
     plt.savefig(join(EVAL_PLOTS_DIR, 'RRMSE_Temporal_vs_SNR.png'))
     plt.close()
@@ -407,9 +411,9 @@ if __name__ == "__main__":
     # RRMSE Spectral vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(SNR_RANGE_DB_EVAL, rrmse_spectral_scores, marker='o', linestyle='-', color='blue')
-    plt.title("Wiener Filter")
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('RRMSE Spectral')
+    plt.title("Wiener Filter", fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('RRMSE Spectral', fontsize=18)
     plt.grid(True)
     plt.savefig(join(EVAL_PLOTS_DIR, 'RRMSE_Spectral_vs_SNR.png'))
     plt.close()
@@ -417,9 +421,9 @@ if __name__ == "__main__":
     # CC vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(SNR_RANGE_DB_EVAL, cc_scores, marker='o', linestyle='-', color='blue')
-    plt.title("Wiener Filter")
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('Pearson\'s CC')
+    plt.title("Wiener Filter", fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('Pearson\'s CC', fontsize=18)
     plt.grid(True)
     plt.savefig(join(EVAL_PLOTS_DIR, 'CC_vs_SNR.png'))
     plt.close()
@@ -440,9 +444,9 @@ if __name__ == "__main__":
         plt.bar(x - width, clean_vals, width, label='Clean', color='blue')
         plt.bar(x, noisy_vals, width, label='Noisy', color='red')
         plt.bar(x + width, denoised_vals, width, label='Denoised', color='green')
-        plt.title("Wiener Filter")
-        plt.xlabel('SNR (dB)')
-        plt.ylabel('Power Ratio')
+        plt.title("Wiener Filter", fontsize=24)
+        plt.xlabel('SNR (dB)', fontsize=18)
+        plt.ylabel('Power Ratio', fontsize=18)
         plt.ylim(0, max_val * 1.05 if max_val > 0 else 1)
         plt.xticks(x, [str(snr) for snr in SNR_RANGE_DB_EVAL])
         plt.grid(axis='y')
@@ -452,17 +456,15 @@ if __name__ == "__main__":
         plt.close()
         print(f"Saved overall {band.capitalize()} band power ratio vs SNR bar chart to '{join(EVAL_PLOTS_DIR, fname)}'")
 
-    # Grouped sample plots for SNRs in pairs (14 images for 14 SNRs, 2 per plot)
-    group_size = 2
-    for idx in range(0, len(snr_samples), group_size):
-        group = snr_samples[idx:idx+group_size]
-        snrs = [item[0] for item in group]
-        noisy_samples = [item[1] for item in group]
-        clean_samples = [item[2] for item in group]
-        denoised_samples = [item[3] for item in group]
-        save_path = join(EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_{'_'.join(str(s) for s in snrs)}.png")
+    # Only save the -6dB grouped sample plot
+    if snr_samples:
+        snrs = [item[0] for item in snr_samples]
+        noisy_samples = [item[1] for item in snr_samples]
+        clean_samples = [item[2] for item in snr_samples]
+        denoised_samples = [item[3] for item in snr_samples]
+        save_path = join(EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_-6.png")
         plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path)
-        print(f"Saved grouped sample denoising plot for SNRs {snrs} to '{save_path}'")
+        print(f"Saved grouped sample denoising plot for SNR -6 dB to '{save_path}'")
 
     print("\nAll evaluation plots have been generated and saved to the 'wiener_evaluation_plots' folder.")
 

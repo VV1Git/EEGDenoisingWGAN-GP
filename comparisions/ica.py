@@ -9,6 +9,8 @@ from sklearn.decomposition import FastICA
 import warnings
 from sklearn.exceptions import ConvergenceWarning
 
+import torch  # Add torch for GPU acceleration
+
 # Suppress all ConvergenceWarning messages
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
@@ -41,6 +43,7 @@ def calculate_cc(clean_signal, denoised_signal):
 def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path):
     num = len(snrs)
     fig, axes = plt.subplots(num, 1, figsize=(10, 3 * num), sharex=True)
+    # No suptitle
     if num == 1:
         axes = [axes]
     for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
@@ -48,12 +51,13 @@ def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples,
         ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
         ax.plot(noisy, label='Noisy EEG', color='red', linestyle='--', alpha=0.7)
         ax.plot(denoised, label='ICA Denoised EEG', color='green', linestyle='-', alpha=0.8)
-        ax.set_title("ICA")
-        ax.set_xlabel("Sample Index")
-        ax.set_ylabel("Amplitude")
+        ax.set_title("ICA", fontsize=24)  # Method name as title
+        ax.set_xlabel("Sample Index", fontsize=18)
+        ax.set_ylabel("Amplitude", fontsize=18)
         ax.legend()
         ax.grid(True)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        # ax.set_yscale('log')  # Remove log scale
+    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
     plt.savefig(save_path)
     plt.close(fig)
 
@@ -87,11 +91,9 @@ def calculate_band_power_ratios(signal, sampling_rate, bands):
 
 def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sampling_rate, bands, save_path=None):
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-    signal_types = {
-        'Clean Signal': clean_signal_np.flatten(),
-        'Contaminated Signal': noisy_signal_np.flatten(),
-        'Denoised Signal': denoised_signal_np.flatten()
-    }
+    fig.suptitle("ICA", fontsize=24)  # Add overall title
+    titles = ["Clean", "Noisy", "Denoised"]
+    signals = [clean_signal_np.flatten(), noisy_signal_np.flatten(), denoised_signal_np.flatten()]
     band_colors = {
         'delta': 'yellow',
         'theta': 'orange',
@@ -99,24 +101,24 @@ def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sa
         'beta': 'skyblue',
         'gamma': 'plum'
     }
-    for i, (title, signal) in enumerate(signal_types.items()):
-        ax = axes[i]
+    for i, (ax, signal, subtitle) in enumerate(zip(axes, signals, titles)):
         f, Pxx = welch(signal, fs=sampling_rate, nperseg=sampling_rate, return_onesided=True)
         ax.plot(f, Pxx, color='blue')
-        ax.set_title("ICA")
-        ax.set_xlabel('Frequency (Hz)')
+        ax.set_title(subtitle)
+        ax.set_xlabel('Frequency (Hz)', fontsize=18)
         if i == 0:
-            ax.set_ylabel('Power (V**2/Hz)')
+            ax.set_ylabel('Power (V**2/Hz)', fontsize=18)
         for band_name, (low_freq, high_freq) in bands.items():
             ax.axvspan(low_freq, high_freq, color=band_colors[band_name], alpha=0.3, label=band_name.capitalize())
         ax.set_xlim(0, 80)
         ax.grid(True, linestyle=':', alpha=0.6)
+        # ax.set_yscale('log')  # Remove log scale
         if i == 0:
             handles, labels = ax.get_legend_handles_labels()
             sorted_labels = [b.capitalize() for b in bands.keys()]
             order = [labels.index(l) for l in sorted_labels if l in labels]
-            ax.legend([handles[idx] for idx in order], [labels[idx] for idx in order], loc='upper right', fontsize='small')
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            ax.legend([handles[idx] for idx in order], [labels[idx] for idx in order], loc='upper right', fontsize=15)
+    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
     if save_path:
         plt.savefig(save_path)
         plt.close(fig)
@@ -137,16 +139,24 @@ def ica_denoise(noisy_signal, n_components=3):
     # ICA expects shape (samples, channels), so stack the signal with delayed versions
     # to create a pseudo-multichannel input if needed
     x = noisy_signal.flatten()
-    X = np.stack([np.roll(x, shift) for shift in range(n_components)], axis=1)
+    # Move data to GPU if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    x_torch = torch.from_numpy(x).float().to(device)
+    X = torch.stack([torch.roll(x_torch, shifts=shift, dims=0) for shift in range(n_components)], dim=1)
+    X_cpu = X.cpu().numpy()  # FastICA only supports CPU, so move back to CPU
+
     ica = FastICA(n_components=n_components, random_state=0, max_iter=10000, tol=0.1)
-    S_ = ica.fit_transform(X)
+    S_ = ica.fit_transform(X_cpu)
     # Remove the component with the highest absolute kurtosis (likely artifact)
     kurt = np.abs(np.apply_along_axis(lambda s: np.mean((s - np.mean(s))**4) / (np.var(s)**2), 0, S_))
     artifact_idx = np.argmax(kurt)
     S_[:, artifact_idx] = 0
     X_denoised = ica.inverse_transform(S_)
     # Return the first channel (original signal)
-    return X_denoised[:, 0]
+    denoised = X_denoised[:, 0]
+    # Move result to GPU if available, then back to CPU numpy for further processing
+    denoised_torch = torch.from_numpy(denoised).float().to(device)
+    return denoised_torch.cpu().numpy()
 
 # --- Main ICA Evaluation Logic ---
 def main():
@@ -170,6 +180,7 @@ def main():
     band_power_ratios_per_snr = {band: {'clean': [], 'noisy': [], 'denoised': []} for band in EEG_BANDS.keys()}
     snr_samples = []
     example_psd_saved = False
+    sample_saved_for_minus6db = False
 
     print("\n--- ICA evaluation across different SNRs ---")
     for current_snr_db in snr_values_db:
@@ -211,7 +222,10 @@ def main():
                     noisy_band_ratios_agg[band].append(noisy_ratios[f'{band}_ratio'])
                     denoised_band_ratios_agg[band].append(denoised_ratios[f'{band}_ratio'])
                 if not example_saved:
-                    snr_samples.append((current_snr_db, noisy, clean, denoised))
+                    # Only save -6dB sample for multi_snr_sample_denoising
+                    if current_snr_db == -6 and not sample_saved_for_minus6db:
+                        snr_samples = [(current_snr_db, noisy, clean, denoised)]
+                        sample_saved_for_minus6db = True
                     # Save PSD plot for the first SNR only
                     if not example_psd_saved:
                         plot_psd_comparison(
@@ -245,9 +259,9 @@ def main():
         plt.bar(x - width, clean_vals, width, label='Clean', color='blue')
         plt.bar(x, noisy_vals, width, label='Noisy', color='red')
         plt.bar(x + width, denoised_vals, width, label='Denoised', color='green')
-        plt.title("ICA")
-        plt.xlabel('SNR (dB)')
-        plt.ylabel('Power Ratio')
+        plt.title("ICA", fontsize=24)
+        plt.xlabel('SNR (dB)', fontsize=18)
+        plt.ylabel('Power Ratio', fontsize=18)
         plt.ylim(0, max_val * 1.05 if max_val > 0 else 1)
         plt.xticks(x, [str(snr) for snr in snr_values_db])
         plt.grid(axis='y')
@@ -257,24 +271,22 @@ def main():
         plt.close()
         print(f"Saved overall {band.capitalize()} band power ratio vs SNR bar chart to '{os.path.join(ICA_EVAL_PLOTS_DIR, fname)}'")
 
-    # Grouped sample plots for SNRs in pairs (14 images for 14 SNRs, 2 per plot)
-    group_size = 2
-    for idx in range(0, len(snr_samples), group_size):
-        group = snr_samples[idx:idx+group_size]
-        snrs = [item[0] for item in group]
-        noisy_samples = [item[1] for item in group]
-        clean_samples = [item[2] for item in group]
-        denoised_samples = [item[3] for item in group]
-        save_path = os.path.join(ICA_EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_{'_'.join(str(s) for s in snrs)}.png")
+    # Only save the -6dB grouped sample plot
+    if snr_samples:
+        snrs = [item[0] for item in snr_samples]
+        noisy_samples = [item[1] for item in snr_samples]
+        clean_samples = [item[2] for item in snr_samples]
+        denoised_samples = [item[3] for item in snr_samples]
+        save_path = os.path.join(ICA_EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_-6.png")
         plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path)
-        print(f"Saved grouped sample denoising plot for SNRs {snrs} to '{save_path}'")
+        print(f"Saved grouped sample denoising plot for SNR -6 dB to '{save_path}'")
 
     # RRMSE Temporal vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(snr_values_db, rrmse_temporal_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title('RRMSE Temporal vs. Input SNR')
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('RRMSE Temporal')
+    plt.title('RRMSE Temporal vs. Input SNR', fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('RRMSE Temporal', fontsize=18)
     plt.grid(True)
     plt.savefig(os.path.join(ICA_EVAL_PLOTS_DIR, 'RRMSE_Temporal_vs_SNR.png'))
     plt.close()
@@ -282,9 +294,9 @@ def main():
     # RRMSE Spectral vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(snr_values_db, rrmse_spectral_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title('RRMSE Spectral vs. Input SNR')
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('RRMSE Spectral')
+    plt.title('RRMSE Spectral vs. Input SNR', fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('RRMSE Spectral', fontsize=18)
     plt.grid(True)
     plt.savefig(os.path.join(ICA_EVAL_PLOTS_DIR, 'RRMSE_Spectral_vs_SNR.png'))
     plt.close()
@@ -292,9 +304,9 @@ def main():
     # CC vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(snr_values_db, cc_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title('Pearson\'s CC vs. Input SNR')
-    plt.xlabel('SNR (dB)')
-    plt.ylabel('Pearson\'s CC')
+    plt.title('ICA', fontsize=24)
+    plt.xlabel('SNR (dB)', fontsize=18)
+    plt.ylabel('Pearson\'s CC', fontsize=18)
     plt.grid(True)
     plt.savefig(os.path.join(ICA_EVAL_PLOTS_DIR, 'CC_vs_SNR.png'))
     plt.close()
