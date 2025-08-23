@@ -16,16 +16,23 @@ def combine_method_plots(ica_path, wiener_path, arwgan_path, output_path):
     wiener_img = wiener_img.resize((min_width, int(wiener_img.height * min_width / wiener_img.width)))
     arwgan_img = arwgan_img.resize((min_width * 2, int(arwgan_img.height * (min_width * 2) / arwgan_img.width)))
 
-    # Create a new blank image to combine
+    # Add a small border (reduce further to 2px)
+    border = -4
+
+
+    # Create a new blank image to combine with reduced border
     top_height = max(ica_img.height, wiener_img.height)
     bottom_height = arwgan_img.height
-    total_width = min_width * 2
-    total_height = top_height + bottom_height
+    total_width = min_width * 2 + border * 3
+    total_height = top_height + bottom_height + border * 3
 
     combined = Image.new("RGB", (total_width, total_height), (255, 255, 255))
-    combined.paste(ica_img, (0, 0))
-    combined.paste(wiener_img, (min_width, 0))
-    combined.paste(arwgan_img, (0, top_height))
+    # Paste ICA (top-left)
+    combined.paste(ica_img, (border, border))
+    # Paste Wiener (top-right)
+    combined.paste(wiener_img, (min_width + border * 2, border))
+    # Paste AR-WGAN (bottom, centered horizontally)
+    combined.paste(arwgan_img, (border, top_height + border * 2))
 
     combined.save(output_path)
 
