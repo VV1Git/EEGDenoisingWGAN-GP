@@ -284,7 +284,7 @@ def main():
     # RRMSE Temporal vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(snr_values_db, rrmse_temporal_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title('RRMSE Temporal vs. Input SNR', fontsize=24)
+    plt.title('ICA', fontsize=24)
     plt.xlabel('SNR (dB)', fontsize=18)
     plt.ylabel('RRMSE Temporal', fontsize=18)
     plt.grid(True)
@@ -294,7 +294,7 @@ def main():
     # RRMSE Spectral vs SNR
     plt.figure(figsize=(6, 5))
     plt.plot(snr_values_db, rrmse_spectral_per_snr, marker='o', linestyle='-', color='blue')
-    plt.title('RRMSE Spectral vs. Input SNR', fontsize=24)
+    plt.title('ICA', fontsize=24)
     plt.xlabel('SNR (dB)', fontsize=18)
     plt.ylabel('RRMSE Spectral', fontsize=18)
     plt.grid(True)
@@ -310,6 +310,43 @@ def main():
     plt.grid(True)
     plt.savefig(os.path.join(ICA_EVAL_PLOTS_DIR, 'CC_vs_SNR.png'))
     plt.close()
+
+    # --- Print summary statistics at the end ---
+    print("\n--- Summary Statistics Across SNRs ---")
+    print(f"Average CC across SNRs: {np.mean(cc_per_snr):.4f} ± {np.std(cc_per_snr):.4f}")
+    print(f"Average RRMSE (Temporal) across SNRs: {np.mean(rrmse_temporal_per_snr):.4f} ± {np.std(rrmse_temporal_per_snr):.4f}")
+    print(f"Average RRMSE (Spectral) across SNRs: {np.mean(rrmse_spectral_per_snr):.4f} ± {np.std(rrmse_spectral_per_snr):.4f}")
+
+    print("\nPSD Ratio (Denoised/Clean) across SNRs for each frequency band:")
+    for band in EEG_BANDS.keys():
+        denoised = np.array(band_power_ratios_per_snr[band]['denoised'])
+        clean = np.array(band_power_ratios_per_snr[band]['clean'])
+        ratio = denoised / (clean + 1e-12)  # avoid division by zero
+        print(f"  {band.capitalize()}: Mean={np.mean(ratio):.4f}, Std={np.std(ratio):.4f}")
+
+    # --- Grouped bar chart: average power ratios for each band (ICA, half AR-WGAN width) ---
+    band_names = list(EEG_BANDS.keys())
+    avg_clean = [np.mean(band_power_ratios_per_snr[band]['clean']) for band in band_names]
+    avg_noisy = [np.mean(band_power_ratios_per_snr[band]['noisy']) for band in band_names]
+    avg_denoised = [np.mean(band_power_ratios_per_snr[band]['denoised']) for band in band_names]
+
+    x = np.arange(len(band_names))
+    width = 0.25
+    plt.figure(figsize=(7, 8))  # ICA: half as wide as AR-WGAN
+    plt.bar(x - width, avg_clean, width, label='Clean', color='blue')
+    plt.bar(x, avg_noisy, width, label='Noisy', color='red')
+    plt.bar(x + width, avg_denoised, width, label='Denoised', color='green')
+    plt.title("ICA", fontsize=24)
+    plt.xlabel('EEG Band', fontsize=18)
+    plt.ylabel('Average Power Ratio', fontsize=18)
+    plt.xticks(x, [b.capitalize() for b in band_names])
+    plt.ylim(0, max(avg_clean + avg_noisy + avg_denoised) * 1.05)
+    plt.legend()
+    plt.grid(axis='y')
+    plt.tight_layout()
+    plt.savefig(os.path.join(ICA_EVAL_PLOTS_DIR, "overall_band_power_ratios_grouped.png"))
+    plt.close()
+    print(f"Saved grouped band power ratio bar chart to '{os.path.join(ICA_EVAL_PLOTS_DIR, 'overall_band_power_ratios_grouped.png')}'")
 
     print("\nICA evaluation complete.")
 

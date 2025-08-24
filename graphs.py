@@ -55,6 +55,9 @@ def main():
     for band in bands:
         plot_types.append(f"overall_{band}_power_ratio_vs_snr.png")
 
+    # Add grouped band power ratio plot
+    plot_types.append("overall_band_power_ratios_grouped.png")
+
     # Add multi_snr_sample_denoising plots (find all matching files)
     ica_multi = [f for f in os.listdir(ica_dir) if f.startswith("multi_snr_sample_denoising_")]
     for fname in ica_multi:
