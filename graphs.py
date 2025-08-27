@@ -1,5 +1,7 @@
 import os
 from PIL import Image
+import matplotlib.pyplot as plt
+import numpy as np
 
 def combine_method_plots(ica_path, wiener_path, arwgan_path, output_path):
     """
@@ -19,7 +21,6 @@ def combine_method_plots(ica_path, wiener_path, arwgan_path, output_path):
     # Add a small border (reduce further to 2px)
     border = -4
 
-
     # Create a new blank image to combine with reduced border
     top_height = max(ica_img.height, wiener_img.height)
     bottom_height = arwgan_img.height
@@ -35,6 +36,99 @@ def combine_method_plots(ica_path, wiener_path, arwgan_path, output_path):
     combined.paste(arwgan_img, (border, top_height + border * 2))
 
     combined.save(output_path)
+
+def plot_overlay_metric(metric_name, ylabel, output_path, ica_dir, wiener_dir, arwgan_dir):
+    """
+    Overlay the metric (CC or RRMSE) vs SNR for all three methods.
+    """
+    method_dirs = {
+        "ICA": ica_dir,
+        "Wiener": wiener_dir,
+        "AR-WGAN": arwgan_dir,
+    }
+    colors = {
+        "ICA": "tab:orange",
+        "Wiener": "tab:green",
+        "AR-WGAN": "tab:blue",
+    }
+    metric_file = {
+        "CC": "cc_vs_snr.txt",
+        "RRMSE": "rrmse_vs_snr.txt",
+        "RRMSE_Spectral": "rrmse_spectral_vs_snr.txt",
+    }[metric_name]
+    plt.figure(figsize=(8, 6))
+    for method, dir_path in method_dirs.items():
+        txt_path = os.path.join(dir_path, metric_file)
+        if not os.path.exists(txt_path):
+            print(f"Missing {metric_name} data for {method} at {txt_path}")
+            continue
+        data = np.loadtxt(txt_path, skiprows=1)
+        snr = data[:, 0]
+        value = data[:, 1]
+        plt.plot(snr, value, marker='o', linestyle='-', color=colors[method], label=method)
+    plt.xlabel("SNR (dB)", fontsize=16)
+    plt.ylabel(ylabel, fontsize=16)
+    plt.title(f"{metric_name.replace('_', ' ')} vs SNR (All Methods)", fontsize=20)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+    print(f"Overlay plot saved to {output_path}")
+
+def plot_overlay_sample_denoising(ica_dir, wiener_dir, arwgan_dir, output_path):
+    """
+    Overlay the denoised signals from all methods on the same clean signal.
+    """
+    method_dirs = {
+        "ICA": ica_dir,
+        "Wiener": wiener_dir,
+        "AR-WGAN": arwgan_dir,
+    }
+    colors = {
+        "ICA": "tab:orange",
+        "Wiener": "red",
+        "AR-WGAN": "tab:blue",
+    }
+    sample_files = {
+        method: os.path.join(dir_path, "sample_denoising_-6.txt")
+        for method, dir_path in method_dirs.items()
+    }
+    # Load the clean signal from any method (they should be identical)
+    for method in method_dirs:
+        if os.path.exists(sample_files[method]):
+            data = np.loadtxt(sample_files[method], skiprows=1)
+            idx = data[:, 0]
+            clean = data[:, 1]
+            break
+    else:
+        print("No sample signal files found for overlay.")
+        return
+
+    plt.figure(figsize=(14, 6))
+    plt.plot(idx, clean, color='green', label='Clean', linewidth=2, alpha=1.0)
+    for method in method_dirs:
+        if os.path.exists(sample_files[method]):
+            data = np.loadtxt(sample_files[method], skiprows=1)
+            denoised = data[:, 3]
+            plt.plot(
+                idx, denoised,
+                color=colors[method],
+                label=f"{method} Denoised",
+                linewidth=1.5,
+                alpha=1.0
+            )
+        else:
+            print(f"Missing sample signal for {method} at {sample_files[method]}")
+    plt.xlabel("Sample Index", fontsize=16)
+    plt.ylabel("Amplitude", fontsize=16)
+    plt.title("Sample Denoising at SNR -6 dB (All Methods)", fontsize=20)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+    print(f"Overlay sample denoising plot saved to {output_path}")
 
 def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -73,6 +167,40 @@ def main():
             print(f"Combined plot saved to {output_path}")
         else:
             print(f"Skipping {plot_name}: missing one or more method plots.")
+
+    # Overlay CC vs SNR and RRMSE vs SNR for all methods
+    plot_overlay_metric(
+        metric_name="CC",
+        ylabel="Pearson's CC",
+        output_path=os.path.join(final_dir, "CC_vs_SNR_overlay.png"),
+        ica_dir=ica_dir,
+        wiener_dir=wiener_dir,
+        arwgan_dir=arwgan_dir,
+    )
+    plot_overlay_metric(
+        metric_name="RRMSE",
+        ylabel="RRMSE Temporal",
+        output_path=os.path.join(final_dir, "RRMSE_Temporal_vs_SNR_overlay.png"),
+        ica_dir=ica_dir,
+        wiener_dir=wiener_dir,
+        arwgan_dir=arwgan_dir,
+    )
+    plot_overlay_metric(
+        metric_name="RRMSE_Spectral",
+        ylabel="RRMSE Spectral",
+        output_path=os.path.join(final_dir, "RRMSE_Spectral_vs_SNR_overlay.png"),
+        ica_dir=ica_dir,
+        wiener_dir=wiener_dir,
+        arwgan_dir=arwgan_dir,
+    )
+
+    # Overlay sample denoising for all methods
+    plot_overlay_sample_denoising(
+        ica_dir=ica_dir,
+        wiener_dir=wiener_dir,
+        arwgan_dir=arwgan_dir,
+        output_path=os.path.join(final_dir, "sample_denoising_-6_overlay.png"),
+    )
 
 if __name__ == "__main__":
     main()

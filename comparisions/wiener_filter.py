@@ -264,6 +264,32 @@ if __name__ == "__main__":
     clean_eeg_np, eog_noise_np, emg_noise_np = prepare_eeg_data(EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB)
     time_len_samples = clean_eeg_np.shape[1]
 
+    # --- Shared sample for all methods ---
+    SHARED_SAMPLE_PATH = os.path.join(EVAL_PLOTS_DIR, "..", "shared_sample_denoising_-6.npz")
+    if not os.path.exists(SHARED_SAMPLE_PATH):
+        # Pick a fixed clean and noise epoch for all methods
+        np.random.seed(42)
+        clean_idx = 0
+        clean_epoch = clean_eeg_np[clean_idx].astype(np.float64).flatten()
+        noise_type = 'both'
+        eog = eog_noise_np[0] if eog_noise_np is not None else np.zeros_like(clean_epoch)
+        emg = emg_noise_np[0] if emg_noise_np is not None else np.zeros_like(clean_epoch)
+        noise_epoch = eog + emg
+        snr_db = -6
+        clean_power = np.mean(clean_epoch**2)
+        noise_power = np.mean(noise_epoch**2)
+        snr_linear = 10**(snr_db / 10)
+        alpha = np.sqrt(clean_power / (snr_linear * noise_power)) if noise_power > 0 else 0
+        noisy_signal = clean_epoch + alpha * noise_epoch
+        noisy_signal = noisy_signal - np.mean(noisy_signal)
+        clean_epoch = clean_epoch - np.mean(clean_epoch)
+        np.savez(SHARED_SAMPLE_PATH, clean=clean_epoch, noisy=noisy_signal)
+        print(f"Saved shared sample for -6dB to {SHARED_SAMPLE_PATH}")
+    else:
+        arr = np.load(SHARED_SAMPLE_PATH)
+        clean_epoch = arr["clean"]
+        noisy_signal = arr["noisy"]
+
     # --- Metric storage for plotting ---
     cc_scores = []
     rrmse_temporal_scores = []
@@ -457,14 +483,14 @@ if __name__ == "__main__":
         print(f"Saved overall {band.capitalize()} band power ratio vs SNR bar chart to '{join(EVAL_PLOTS_DIR, fname)}'")
 
     # Only save the -6dB grouped sample plot
-    if snr_samples:
-        snrs = [item[0] for item in snr_samples]
-        noisy_samples = [item[1] for item in snr_samples]
-        clean_samples = [item[2] for item in snr_samples]
-        denoised_samples = [item[3] for item in snr_samples]
-        save_path = join(EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_-6.png")
-        plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path)
-        print(f"Saved grouped sample denoising plot for SNR -6 dB to '{save_path}'")
+    if True:  # Always save the shared sample
+        denoised = wiener_filter_scipy(noisy_signal, mysize=31)
+        sample_txt_path = os.path.join(EVAL_PLOTS_DIR, "sample_denoising_-6.txt")
+        with open(sample_txt_path, "w") as f:
+            f.write("Index\tClean\tNoisy\tDenoised\n")
+            for i in range(len(clean_epoch)):
+                f.write(f"{i}\t{clean_epoch[i]}\t{noisy_signal[i]}\t{denoised[i]}\n")
+        print(f"Saved sample denoising signals to '{sample_txt_path}'")
 
     # --- Print summary statistics at the end ---
     print("\n--- Summary Statistics Across SNRs ---")
@@ -478,6 +504,26 @@ if __name__ == "__main__":
         clean = np.array(band_power_ratios_per_snr[band]['clean'])
         ratio = denoised / (clean + 1e-12)  # avoid division by zero
         print(f"  {band.capitalize()}: Mean={np.mean(ratio):.4f}, Std={np.std(ratio):.4f}")
+
+    # --- Save CC and RRMSE vs SNR data to text files for overlay plotting ---
+    cc_txt_path = os.path.join(EVAL_PLOTS_DIR, "cc_vs_snr.txt")
+    rrmse_txt_path = os.path.join(EVAL_PLOTS_DIR, "rrmse_vs_snr.txt")
+    rrmse_spectral_txt_path = os.path.join(EVAL_PLOTS_DIR, "rrmse_spectral_vs_snr.txt")
+    with open(cc_txt_path, "w") as f:
+        f.write("SNR_dB\tCC\n")
+        for snr, cc in zip(SNR_RANGE_DB_EVAL, cc_scores):
+            f.write(f"{snr}\t{cc}\n")
+    with open(rrmse_txt_path, "w") as f:
+        f.write("SNR_dB\tRRMSE\n")
+        for snr, rrmse in zip(SNR_RANGE_DB_EVAL, rrmse_temporal_scores):
+            f.write(f"{snr}\t{rrmse}\n")
+    with open(rrmse_spectral_txt_path, "w") as f:
+        f.write("SNR_dB\tRRMSE_Spectral\n")
+        for snr, rrmse_spec in zip(SNR_RANGE_DB_EVAL, rrmse_spectral_scores):
+            f.write(f"{snr}\t{rrmse_spec}\n")
+    print(f"Saved CC vs SNR data to '{cc_txt_path}'")
+    print(f"Saved RRMSE vs SNR data to '{rrmse_txt_path}'")
+    print(f"Saved RRMSE Spectral vs SNR data to '{rrmse_spectral_txt_path}'")
 
     # --- Grouped bar chart: average power ratios for each band (Wiener, half AR-WGAN width) ---
     band_names = list(EEG_BANDS.keys())
@@ -504,4 +550,5 @@ if __name__ == "__main__":
     print(f"Saved grouped band power ratio bar chart to '{os.path.join(EVAL_PLOTS_DIR, 'overall_band_power_ratios_grouped.png')}'")
 
     print("\nAll evaluation plots have been generated and saved to the 'wiener_evaluation_plots' folder.")
+
 

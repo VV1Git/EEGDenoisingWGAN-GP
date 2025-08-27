@@ -164,6 +164,9 @@ def main():
     os.makedirs(ICA_EVAL_PLOTS_DIR, exist_ok=True)
     print(f"Created/Ensured '{ICA_EVAL_PLOTS_DIR}' directory exists for ICA evaluation plots.")
 
+    # --- Shared sample for all methods ---
+    SHARED_SAMPLE_PATH = os.path.join(ICA_EVAL_PLOTS_DIR, "..", "shared_sample_denoising_-6.npz")
+
     # Load data
     clean_eeg_all, eog_noise, emg_noise = prepare_eeg_data(
         EEG_FILE, EOG_FILE, EMG_FILE, [-100, -100]
@@ -172,6 +175,33 @@ def main():
     _, test_clean_eeg_np = train_test_split(
         clean_eeg_all, test_size=(1 - TRAIN_SPLIT_RATIO), random_state=42
     )
+
+    # --- Generate or load shared sample for -6dB ---
+    if not os.path.exists(SHARED_SAMPLE_PATH):
+        # Pick a fixed clean and noise epoch for all methods
+        np.random.seed(42)
+        clean_idx = 0
+        clean_epoch = test_clean_eeg_np[clean_idx].astype(np.float64).flatten()
+        noise_type = 'both'
+        eog = eog_noise[0] if eog_noise is not None else np.zeros_like(clean_epoch)
+        emg = emg_noise[0] if emg_noise is not None else np.zeros_like(clean_epoch)
+        noise_epoch = eog + emg
+        # SNR -6 dB
+        snr_db = -6
+        clean_power = np.mean(clean_epoch**2)
+        noise_power = np.mean(noise_epoch**2)
+        snr_linear = 10**(snr_db / 10)
+        alpha = np.sqrt(clean_power / (snr_linear * noise_power)) if noise_power > 0 else 0
+        noisy_signal = clean_epoch + alpha * noise_epoch
+        # Remove mean
+        noisy_signal = noisy_signal - np.mean(noisy_signal)
+        clean_epoch = clean_epoch - np.mean(clean_epoch)
+        np.savez(SHARED_SAMPLE_PATH, clean=clean_epoch, noisy=noisy_signal)
+        print(f"Saved shared sample for -6dB to {SHARED_SAMPLE_PATH}")
+    else:
+        arr = np.load(SHARED_SAMPLE_PATH)
+        clean_epoch = arr["clean"]
+        noisy_signal = arr["noisy"]
 
     snr_values_db = SNR_RANGE_DB_EVAL
     rrmse_temporal_per_snr = []
@@ -272,14 +302,14 @@ def main():
         print(f"Saved overall {band.capitalize()} band power ratio vs SNR bar chart to '{os.path.join(ICA_EVAL_PLOTS_DIR, fname)}'")
 
     # Only save the -6dB grouped sample plot
-    if snr_samples:
-        snrs = [item[0] for item in snr_samples]
-        noisy_samples = [item[1] for item in snr_samples]
-        clean_samples = [item[2] for item in snr_samples]
-        denoised_samples = [item[3] for item in snr_samples]
-        save_path = os.path.join(ICA_EVAL_PLOTS_DIR, f"multi_snr_sample_denoising_-6.png")
-        plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path)
-        print(f"Saved grouped sample denoising plot for SNR -6 dB to '{save_path}'")
+    if True:  # Always save the shared sample
+        denoised = ica_denoise(noisy_signal)
+        sample_txt_path = os.path.join(ICA_EVAL_PLOTS_DIR, "sample_denoising_-6.txt")
+        with open(sample_txt_path, "w") as f:
+            f.write("Index\tClean\tNoisy\tDenoised\n")
+            for i in range(len(clean_epoch)):
+                f.write(f"{i}\t{clean_epoch[i]}\t{noisy_signal[i]}\t{denoised[i]}\n")
+        print(f"Saved sample denoising signals to '{sample_txt_path}'")
 
     # RRMSE Temporal vs SNR
     plt.figure(figsize=(6, 5))
@@ -323,6 +353,26 @@ def main():
         clean = np.array(band_power_ratios_per_snr[band]['clean'])
         ratio = denoised / (clean + 1e-12)  # avoid division by zero
         print(f"  {band.capitalize()}: Mean={np.mean(ratio):.4f}, Std={np.std(ratio):.4f}")
+
+    # --- Save CC and RRMSE vs SNR data to text files for overlay plotting ---
+    cc_txt_path = os.path.join(ICA_EVAL_PLOTS_DIR, "cc_vs_snr.txt")
+    rrmse_txt_path = os.path.join(ICA_EVAL_PLOTS_DIR, "rrmse_vs_snr.txt")
+    rrmse_spectral_txt_path = os.path.join(ICA_EVAL_PLOTS_DIR, "rrmse_spectral_vs_snr.txt")
+    with open(cc_txt_path, "w") as f:
+        f.write("SNR_dB\tCC\n")
+        for snr, cc in zip(snr_values_db, cc_per_snr):
+            f.write(f"{snr}\t{cc}\n")
+    with open(rrmse_txt_path, "w") as f:
+        f.write("SNR_dB\tRRMSE\n")
+        for snr, rrmse in zip(snr_values_db, rrmse_temporal_per_snr):
+            f.write(f"{snr}\t{rrmse}\n")
+    with open(rrmse_spectral_txt_path, "w") as f:
+        f.write("SNR_dB\tRRMSE_Spectral\n")
+        for snr, rrmse_spec in zip(snr_values_db, rrmse_spectral_per_snr):
+            f.write(f"{snr}\t{rrmse_spec}\n")
+    print(f"Saved CC vs SNR data to '{cc_txt_path}'")
+    print(f"Saved RRMSE vs SNR data to '{rrmse_txt_path}'")
+    print(f"Saved RRMSE Spectral vs SNR data to '{rrmse_spectral_txt_path}'")
 
     # --- Grouped bar chart: average power ratios for each band (ICA, half AR-WGAN width) ---
     band_names = list(EEG_BANDS.keys())
