@@ -599,6 +599,17 @@ def main():
         avg_cosine_sim_at_neg14db = np.mean(cosine_sim_power_ratios_at_neg14db)
         print(f"\nAverage Cosine Similarity of Power Ratios (Clean vs. Denoised) at -14dB: {avg_cosine_sim_at_neg14db:.4f}")
 
+    # --- Save Band Power Ratios to text file for graphs.py ---
+    band_powers_txt_path = os.path.join(EVAL_PLOTS_DIR, "band_power_ratios.txt")
+    with open(band_powers_txt_path, "w") as f:
+        f.write("Band\tClean\tNoisy\tDenoised\n")
+        for band in EEG_BANDS.keys():
+            avg_clean = np.mean(clean_band_ratios_agg_overall[band])
+            avg_noisy = np.mean(noisy_band_ratios_agg_overall[band])
+            avg_denoised = np.mean(denoised_band_ratios_agg_overall[band])
+            f.write(f"{band}\t{avg_clean}\t{avg_noisy}\t{avg_denoised}\n")
+    print(f"Saved aggregated band power ratios to '{band_powers_txt_path}'")
+
     # --- Print summary statistics at the end ---
     print("\n--- Summary Statistics Across SNRs ---")
     print(f"Average CC across SNRs: {np.mean(cc_per_snr):.4f} ± {np.std(cc_per_snr):.4f}")

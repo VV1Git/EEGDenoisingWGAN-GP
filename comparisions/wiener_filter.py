@@ -525,6 +525,19 @@ if __name__ == "__main__":
     print(f"Saved RRMSE vs SNR data to '{rrmse_txt_path}'")
     print(f"Saved RRMSE Spectral vs SNR data to '{rrmse_spectral_txt_path}'")
 
+    # --- Save Band Power Ratios to text file for graphs.py ---
+    band_names = list(EEG_BANDS.keys())
+    avg_clean_all = [np.mean(band_power_ratios_per_snr[band]['clean']) for band in band_names]
+    avg_noisy_all = [np.mean(band_power_ratios_per_snr[band]['noisy']) for band in band_names]
+    avg_denoised_all = [np.mean(band_power_ratios_per_snr[band]['denoised']) for band in band_names]
+
+    band_powers_txt_path = os.path.join(EVAL_PLOTS_DIR, "band_power_ratios.txt")
+    with open(band_powers_txt_path, "w") as f:
+        f.write("Band\tClean\tNoisy\tDenoised\n")
+        for i, band in enumerate(band_names):
+            f.write(f"{band}\t{avg_clean_all[i]}\t{avg_noisy_all[i]}\t{avg_denoised_all[i]}\n")
+    print(f"Saved aggregated band power ratios to '{band_powers_txt_path}'")
+
     # --- Grouped bar chart: average power ratios for each band (Wiener, half AR-WGAN width) ---
     band_names = list(EEG_BANDS.keys())
     avg_clean = [np.mean(band_power_ratios_per_snr[band]['clean']) for band in band_names]

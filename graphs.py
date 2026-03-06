@@ -66,9 +66,20 @@ def plot_overlay_metric(metric_name, ylabel, output_path, ica_dir, wiener_dir, a
         snr = data[:, 0]
         value = data[:, 1]
         plt.plot(snr, value, marker='o', linestyle='-', color=colors[method], label=method)
+
+    # Build explicit title text for clarity
+    if metric_name == "RRMSE":
+        title_text = "RRMSE Temporal vs SNR (All Methods)"
+    elif metric_name == "RRMSE_Spectral":
+        title_text = "RRMSE Spectral vs SNR (All Methods)"
+    elif metric_name == "CC":
+        title_text = "CC vs SNR (All Methods)"
+    else:
+        title_text = f"{metric_name.replace('_', ' ')} vs SNR (All Methods)"
+
     plt.xlabel("SNR (dB)", fontsize=16)
     plt.ylabel(ylabel, fontsize=16)
-    plt.title(f"{metric_name.replace('_', ' ')} vs SNR (All Methods)", fontsize=20)
+    plt.title(title_text, fontsize=20)
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -118,10 +129,8 @@ def plot_overlay_sample_denoising(ica_dir, wiener_dir, arwgan_dir, output_path):
                 linewidth=1.5,
                 alpha=1.0
             )
-        else:
-            print(f"Missing sample signal for {method} at {sample_files[method]}")
     plt.xlabel("Sample Index", fontsize=16)
-    plt.ylabel("Amplitude", fontsize=16)
+    plt.ylabel("Denoised Amplitude", fontsize=16)
     plt.title("Sample Denoising at SNR -6 dB (All Methods)", fontsize=20)
     plt.legend()
     plt.grid(True)
@@ -129,6 +138,92 @@ def plot_overlay_sample_denoising(ica_dir, wiener_dir, arwgan_dir, output_path):
     plt.savefig(output_path)
     plt.close()
     print(f"Overlay sample denoising plot saved to {output_path}")
+
+def plot_band_power_preservation_comparison(ica_dir, wiener_dir, arwgan_dir, output_path):
+    """
+    Plots a grouped bar chart showing the ratio of Denoised Power to Clean Power
+    for each EEG band across all three methods.
+    A value of 1.0 indicates perfect power preservation.
+    """
+    method_dims = {
+        "ICA": ica_dir,
+        "Wiener": wiener_dir,
+        "AR-WGAN": arwgan_dir,
+    }
+    colors = {
+        "ICA": "tab:orange",
+        "Wiener": "tab:green",
+        "AR-WGAN": "tab:blue",
+    }
+    
+    # Structure to hold data: {band: {method: ratio}}
+    bands_data = {} 
+    
+    for method, dir_path in method_dims.items():
+        txt_path = os.path.join(dir_path, "band_power_ratios.txt")
+        if not os.path.exists(txt_path):
+            print(f"Missing band power data for {method} at {txt_path}")
+            continue
+            
+        with open(txt_path, 'r') as f:
+            lines = f.readlines()[1:] # Skip header
+            for line in lines:
+                parts = line.strip().split('\t')
+                if len(parts) < 4: continue
+                band_name = parts[0]
+                clean_val = float(parts[1])
+                denoised_val = float(parts[3])
+                
+                # Calculate ratio: Denoised / Clean
+                ratio = denoised_val / clean_val if clean_val != 0 else 0
+                
+                if band_name not in bands_data:
+                    bands_data[band_name] = {}
+                bands_data[band_name][method] = ratio
+
+    if not bands_data:
+        print("No band power data found.")
+        return
+
+    # Prepare plot data
+    bands_ordered = ["delta", "theta", "alpha", "beta", "gamma"] # canonical order
+    # Filter only bands that exist in data
+    bands = [b for b in bands_ordered if b in bands_data]
+    if not bands:
+        bands = list(bands_data.keys())
+        
+    x = np.arange(len(bands))
+    width = 0.25  # width of each bar
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Plot bars for each method
+    methods = ["ICA", "Wiener", "AR-WGAN"]
+    # Adjust offsets so bars are centered on tick
+    offsets = [-width, 0, width]
+    
+    for i, method in enumerate(methods):
+        y_vals = []
+        for band in bands:
+            y_vals.append(bands_data[band].get(method, 0))
+        
+        ax.bar(x + offsets[i], y_vals, width, label=method, color=colors[method])
+
+    # Add reference line at 1.0
+    ax.axhline(y=1.0, color='gray', linestyle='--', linewidth=1.5, label='Ideal Ratio (1.0)')
+
+    ax.set_ylabel('Denoised / Clean Power Ratio', fontsize=16)
+    ax.set_xlabel('EEG Frequency Band', fontsize=16)
+    ax.set_title('Power Preservation by Band (All Methods)', fontsize=20)
+    ax.set_xticks(x)
+    ax.set_xticklabels([b.capitalize() for b in bands])
+    ax.legend(loc='best')
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+    print(f"Band power comparison plot saved to {output_path}")
 
 def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -200,6 +295,14 @@ def main():
         wiener_dir=wiener_dir,
         arwgan_dir=arwgan_dir,
         output_path=os.path.join(final_dir, "sample_denoising_-6_overlay.png"),
+    )
+
+    # Generate the new band power preservation ratio plot
+    plot_band_power_preservation_comparison(
+        ica_dir=ica_dir,
+        wiener_dir=wiener_dir,
+        arwgan_dir=arwgan_dir,
+        output_path=os.path.join(final_dir, "band_power_preservation_ratio.png"),
     )
 
 if __name__ == "__main__":
