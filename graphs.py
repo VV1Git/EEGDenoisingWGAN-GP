@@ -227,8 +227,8 @@ def plot_band_power_preservation_comparison(ica_dir, wiener_dir, arwgan_dir, out
 
 def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    ica_dir = os.path.join(base_dir, "comparisions", "ica_evaluation_plots")
-    wiener_dir = os.path.join(base_dir, "comparisions", "wiener_evaluation_plots")
+    ica_dir = os.path.join(base_dir, "comparisons", "ica_evaluation_plots")
+    wiener_dir = os.path.join(base_dir, "comparisons", "wiener_evaluation_plots")
     arwgan_dir = os.path.join(base_dir, "evaluation_plots")
     final_dir = os.path.join(base_dir, "finalplots")
     os.makedirs(final_dir, exist_ok=True)
@@ -246,11 +246,6 @@ def main():
 
     # Add grouped band power ratio plot
     plot_types.append("overall_band_power_ratios_grouped.png")
-
-    # Add multi_snr_sample_denoising plots (find all matching files)
-    ica_multi = [f for f in os.listdir(ica_dir) if f.startswith("multi_snr_sample_denoising_")]
-    for fname in ica_multi:
-        plot_types.append(fname)
 
     for plot_name in plot_types:
         ica_path = os.path.join(ica_dir, plot_name)

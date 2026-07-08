@@ -1,5 +1,6 @@
 # Centralized configuration and shared variables for EEG Denoising GAN project
 
+import os
 import numpy as np
 
 # --- File Paths ---
@@ -7,9 +8,14 @@ EEG_FILE = 'dataset/EEG_all_epochs.npy'
 EOG_FILE = 'dataset/EOG_all_epochs.npy'
 EMG_FILE = 'dataset/EMG_all_epochs.npy'
 
+# Fixed -6 dB clean/noisy sample shared by every evaluator for the overlay plot.
+# Absolute (repo-root) path so all scripts read/write the SAME file regardless of
+# the working directory, guaranteeing a true same-sample comparison.
+SHARED_SAMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'shared_sample_denoising_-6.npz')
+
 # --- SNR Range ---
 SNR_RANGE_DB = [-14, 0]  # For training
-SNR_RANGE_DB_EVAL = np.arange(-14, 2, 2)  # For evaluation (e.g., -14, -12, ..., 4 dB)
+SNR_RANGE_DB_EVAL = np.arange(-14, 2, 2)  # For evaluation: -14, -12, -10, -8, -6, -4, -2, 0 dB
 
 # --- Data Split Ratio ---
 TRAIN_SPLIT_RATIO = 0.9  # 90% for training, 10% for testing

@@ -1,248 +1,38 @@
 import torch
-import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt # type:ignore
 import os
-from sklearn.model_selection import train_test_split # type:ignore
-from scipy.signal import welch # For power spectral density calculation # type:ignore
-from scipy.integrate import simpson # For integrating PSD over frequency bands # type:ignore
-from scipy.stats import pearsonr # For Pearson's correlation coefficient # type:ignore
-from tqdm import tqdm # Added tqdm import
-from sklearn.metrics.pairwise import cosine_similarity # For cosine similarity # type:ignore
+from tqdm import tqdm
 
 # Import shared variables
 from variables import (
     EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB_EVAL, SNR_RANGE_DB, SAVED_MODEL_PATH, EVAL_PLOTS_DIR,
-    CHANNELS_EEG, FEATURES_GEN, BATCH_SIZE, EEG_BANDS, SAMPLING_RATE, PSD_SAMPLE_INDEX_FOR_VIZ, TRAIN_SPLIT_RATIO, NUM_NOISE_VARIANTS
+    CHANNELS_EEG, FEATURES_GEN, BATCH_SIZE, EEG_BANDS, SAMPLING_RATE, PSD_SAMPLE_INDEX_FOR_VIZ,
+    NUM_NOISE_VARIANTS, SHARED_SAMPLE_PATH
 )
 
-# Import necessary components from your project files
-from model import Generator # Only need the Generator for evaluation
-from utils import load_checkpoint # To load the saved model
-from eeg_data_generator import prepare_eeg_data, EEGNoiseDataset, DataLoader
+# Import the Generator, the shared evaluation metrics (single source of truth,
+# identical across AR-WGAN / ICA / Wiener), the shared data helpers, and the
+# shared PSD plot.
+from model import Generator
+from metrics import (
+    calculate_rrmse, calculate_rrmse_spectral, calculate_cc,
+    calculate_band_power_ratios, calculate_cosine_similarity_power_ratios,
+)
+from eeg_data_generator import (
+    prepare_eeg_data, EEGNoiseDataset, DataLoader, split_train_test, make_or_load_shared_sample,
+)
+from plots import plot_psd_comparison
 
 # --- Configuration ---
-# Set device for evaluation
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
-
-# Paths to your data files (should be consistent with training setup)
-# SNR_RANGE_DB is now used for the range of SNRs to *test*
 
 # Output directory for evaluation plots
 os.makedirs(EVAL_PLOTS_DIR, exist_ok=True)
 print(f"Created/Ensured '{EVAL_PLOTS_DIR}' directory exists for evaluation plots.")
 
-# Model architecture parameters (MUST match the trained generator's parameters)
-CHANNELS_EEG = 1
-SAMPLES_PER_EPOCH = None # Will be set after loading data
-
-# EEG frequency bands and sampling rate for power analysis
-
-# Data split ratio (MUST match training.py)
-# Number of noise variants per clean epoch for augmentation (MUST match training.py)
-
-
-# --- Metric Calculation Functions ---
-
-def calculate_rrmse(clean_signal, denoised_signal):
-    """Calculates Relative Root Mean Squared Error (RRMSE) in the temporal domain.
-    Lower RRMSE indicates better denoising.
-    """
-    # Ensure inputs are NumPy arrays
-    clean_signal = clean_signal.flatten() # Flatten to 1D
-    denoised_signal = denoised_signal.flatten()
-
-    # Calculate RMSE
-    rmse = np.sqrt(np.mean((clean_signal - denoised_signal)**2))
-    
-    # Calculate RMS of the clean signal
-    rms_clean = np.sqrt(np.mean(clean_signal**2))
-
-    if rms_clean == 0: # Avoid division by zero for flat clean signals
-        return np.inf if rmse > 0 else 0.0
-    return rmse / rms_clean
-
-def calculate_rrmse_spectral(clean_signal, denoised_signal, sampling_rate):
-    """Calculates Relative Root Mean Squared Error (RRMSE) in the spectral domain.
-    Compares the PSDs of the clean and denoised signals.
-    """
-    # Ensure inputs are 1D arrays for PSD calculation
-    if clean_signal.ndim > 1: clean_signal = clean_signal.flatten()
-    if denoised_signal.ndim > 1: denoised_signal = denoised_signal.flatten()
-
-    # Compute PSDs
-    f_clean, Pxx_clean = welch(clean_signal, fs=sampling_rate, nperseg=sampling_rate, return_onesided=True)
-    f_denoised, Pxx_denoised = welch(denoised_signal, fs=sampling_rate, nperseg=sampling_rate, return_onesided=True)
-
-    # Ensure frequency bins match (they should if sampling_rate and nperseg are same)
-    if not np.array_equal(f_clean, f_denoised):
-        raise ValueError("Frequency bins for clean and denoised PSDs do not match.")
-
-    # Calculate RMSE between PSDs
-    rmse_psd = np.sqrt(np.mean((Pxx_clean - Pxx_denoised)**2))
-    
-    # Calculate RMS of clean PSD
-    rms_clean_psd = np.sqrt(np.mean(Pxx_clean**2))
-
-    if rms_clean_psd == 0:
-        return np.inf if rmse_psd > 0 else 0.0
-    return rmse_psd / rms_clean_psd
-
-
-def calculate_cc(clean_signal, denoised_signal):
-    """Calculates Pearson's Correlation Coefficient (CC).
-    Higher CC (closer to 1) indicates better preservation of signal shape.
-    """
-    # Ensure inputs are NumPy arrays
-    clean_signal = clean_signal.flatten() # Flatten to 1D
-    denoised_signal = denoised_signal.flatten()
-
-    # Handle cases where std dev might be zero (flat signals)
-    if np.std(clean_signal) == 0 or np.std(denoised_signal) == 0:
-        return 1.0 if np.allclose(clean_signal, denoised_signal) else 0.0 # Perfect correlation if identical and flat, else 0
-    
-    # Pearsonr returns (correlation_coefficient, p_value)
-    return pearsonr(clean_signal, denoised_signal)[0]
-
-def calculate_band_power_ratios(signal, sampling_rate, bands):
-    """
-    Calculates the power in specified EEG frequency bands and their ratios to total power.
-
-    Args:
-        signal (np.ndarray): The EEG signal. Can be 1D (samples,) or 2D (batch_size, samples).
-        sampling_rate (int): The sampling rate of the EEG signal (Hz).
-        bands (dict): Dictionary defining frequency bands, e.g.,
-                      {'delta': [0.5, 4], 'theta': [4, 8], ...}
-
-    Returns:
-        dict: A dictionary with band power ratios (e.g., {'delta_ratio': 0.2, ...}).
-    """
-    # If signal is (batch_size, 1, samples), it's already squeezed to (batch_size, samples)
-    # If signal is (samples,), it remains 1D.
-    
-    # Compute Power Spectral Density (PSD) using Welch's method
-    # f: array of sample frequencies (1D)
-    # Pxx: Power spectral density. If signal is 1D, Pxx is 1D. If signal is 2D (batch_size, samples), Pxx is (batch_size, num_freq_bins)
-    f, Pxx = welch(signal, fs=sampling_rate, nperseg=sampling_rate, return_onesided=True, axis=-1) # nperseg = 2 seconds window
-
-    # Integrate PSD to get total power.
-    # If Pxx is (batch_size, num_freq_bins), total_power will be (batch_size,)
-    total_power = simpson(Pxx, f, axis=-1) 
-
-    band_ratios = {}
-    for band_name, (low_freq, high_freq) in bands.items():
-        # Find frequencies within the band using a boolean mask
-        freq_mask = (f >= low_freq) & (f <= high_freq)
-        
-        # Integrate PSD over the band frequencies using the mask
-        # band_power will be (batch_size,) if Pxx was (batch_size, num_freq_bins), or scalar if Pxx was 1D
-        band_power = simpson(Pxx[..., freq_mask], f[freq_mask], axis=-1)
-        
-        # Calculate ratio, handle division by zero
-        # Ensure total_power is not zero before division
-        ratio = np.where(total_power == 0, 0, band_power / total_power)
-        
-        # Average ratio across the batch (if batch exists), otherwise just the scalar ratio
-        band_ratios[f'{band_name}_ratio'] = np.mean(ratio) if ratio.ndim > 0 else ratio
-
-    return band_ratios
-
-def calculate_cosine_similarity_power_ratios(clean_signal_np, denoised_signal_np, sampling_rate, bands):
-    """
-    Calculates the cosine similarity between the vector of band power ratios
-    of the clean signal and the denoised signal.
-
-    Args:
-        clean_signal_np (np.ndarray): A single clean EEG signal (1D array).
-        denoised_signal_np (np.ndarray): A single denoised EEG signal (1D array).
-        sampling_rate (int): The sampling rate of the EEG signal (Hz).
-        bands (dict): Dictionary defining frequency bands.
-
-    Returns:
-        float: Cosine similarity value.
-    """
-    # Calculate band power ratios for clean and denoised signals
-    clean_ratios = calculate_band_power_ratios(clean_signal_np, sampling_rate, bands)
-    denoised_ratios = calculate_band_power_ratios(denoised_signal_np, sampling_rate, bands)
-
-    # Create vectors of ratios in a consistent order
-    clean_ratio_vector = np.array([clean_ratios[f'{band}_ratio'] for band in bands.keys()])
-    denoised_ratio_vector = np.array([denoised_ratios[f'{band}_ratio'] for band in bands.keys()])
-
-    # Reshape for sklearn's cosine_similarity (expects 2D arrays: (n_samples, n_features))
-    clean_ratio_vector = clean_ratio_vector.reshape(1, -1)
-    denoised_ratio_vector = denoised_ratio_vector.reshape(1, -1)
-
-    # Calculate cosine similarity
-    # cosine_similarity returns a 2D array, so take the [0, 0] element
-    return cosine_similarity(clean_ratio_vector, denoised_ratio_vector)[0, 0]
-
-
-# --- Visualization Function (reused from training.py, adapted for evaluation) ---
-def plot_multi_snr_samples(snrs, noisy_samples, clean_samples, denoised_samples, save_path):
-    """
-    Plots sample denoising results for multiple SNRs in a single figure.
-    """
-    num = len(snrs)
-    fig, axes = plt.subplots(num, 1, figsize=(20, 3 * num), sharex=True)
-    # No suptitle
-    if num == 1:
-        axes = [axes]
-    for idx, (snr, noisy, clean, denoised) in enumerate(zip(snrs, noisy_samples, clean_samples, denoised_samples)):
-        ax = axes[idx]
-        ax.plot(clean, label='Clean EEG', color='blue', alpha=0.7)
-        ax.plot(noisy, label='Noisy EEG', color='red', linestyle='--', alpha=0.7)
-        ax.plot(denoised, label='Denoised EEG', color='green', linestyle='-', alpha=0.8)
-        ax.set_title("AR-WGAN", fontsize=24)  # Method name as title
-        ax.set_xlabel("Sample Index", fontsize=18)
-        ax.set_ylabel("Amplitude", fontsize=18)
-        ax.legend()
-        ax.grid(True)
-        # ax.set_yscale('log')  # Remove log scale
-    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
-    plt.savefig(save_path)
-    plt.close(fig)
-
-def plot_psd_comparison(clean_signal_np, noisy_signal_np, denoised_signal_np, sampling_rate, bands, save_path=None):
-    """
-    Plots and compares the Power Spectral Density (PSD) of clean, noisy, and denoised signals,
-    highlighting EEG frequency bands.
-    """
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-    fig.suptitle("AR-WGAN", fontsize=24)  # Add overall title
-    titles = ["Clean", "Noisy", "Denoised"]
-    signals = [clean_signal_np.flatten(), noisy_signal_np.flatten(), denoised_signal_np.flatten()]
-    band_colors = {
-        'delta': 'yellow',
-        'theta': 'orange',
-        'alpha': 'lightgreen',
-        'beta': 'skyblue',
-        'gamma': 'plum'
-    }
-    for i, (ax, signal, subtitle) in enumerate(zip(axes, signals, titles)):
-        f, Pxx = welch(signal, fs=sampling_rate, nperseg=sampling_rate, return_onesided=True)
-        ax.plot(f, Pxx, color='blue')
-        ax.set_title(subtitle)
-        ax.set_xlabel('Frequency (Hz)', fontsize=18)
-        if i == 0:
-            ax.set_ylabel('Power (V**2/Hz)', fontsize=18)
-        for band_name, (low_freq, high_freq) in bands.items():
-            ax.axvspan(low_freq, high_freq, color=band_colors[band_name], alpha=0.3, label=band_name.capitalize())
-        ax.set_xlim(0, 80)
-        ax.grid(True, linestyle=':', alpha=0.6)
-        # ax.set_yscale('log')  # Remove log scale
-        if i == 0:
-            handles, labels = ax.get_legend_handles_labels()
-            sorted_labels = [b.capitalize() for b in bands.keys()]
-            order = [labels.index(l) for l in sorted_labels if l in labels]
-            ax.legend([handles[idx] for idx in order], [labels[idx] for idx in order], loc='upper right', fontsize=15)
-    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
-    if save_path:
-        plt.savefig(save_path)
-        plt.close(fig)
-    else:
-        plt.show()
+SAMPLES_PER_EPOCH = None  # Will be set after loading data
 
 
 # --- Main Evaluation Logic ---
@@ -258,24 +48,12 @@ def main():
         print("Please ensure your dataset files are correctly placed and named.")
         return
 
-    # Re-split data to ensure the test set is exactly what was unseen during training
-    # Use the same random_state as in training.py
-    TRAIN_SPLIT_RATIO = 0.9 # Changed to 90% training, 10% testing
-    _, test_clean_eeg_np = train_test_split(
-        clean_eeg_all, test_size=(1 - TRAIN_SPLIT_RATIO), random_state=42
+    # Re-derive the held-out test set with the shared split so the clean epochs
+    # AND the noise pools are identical to (and disjoint from) what train.py used.
+    _, test_clean_eeg_np, _, test_eog, _, test_emg = split_train_test(
+        clean_eeg_all, eog_noise, emg_noise
     )
-
-    test_dataset = EEGNoiseDataset(
-        test_clean_eeg_np, eog_noise, emg_noise, SNR_RANGE_DB,
-        num_noise_variants_per_clean_epoch=NUM_NOISE_VARIANTS # Pass the new parameter
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False, # Important: Do NOT shuffle test data for consistent evaluation
-        # num_workers=4, # You can add num_workers here for faster evaluation if needed
-    )
-    print(f"Loaded test dataset with {len(test_dataset)} samples.")
+    print(f"Held-out test set: {test_clean_eeg_np.shape[0]} clean EEG epochs.")
 
     # 2. Load the trained Generator model
     generator = Generator(CHANNELS_EEG, SAMPLES_PER_EPOCH, FEATURES_GEN).to(device)
@@ -291,44 +69,22 @@ def main():
     generator.eval() # Set generator to evaluation mode (disables dropout, batch norm updates)
 
     # --- Data collection for SNR vs. Metrics plots ---
-    snr_values_db = SNR_RANGE_DB_EVAL # Renamed from SNR_RANGE_DB_FOR_TESTING
+    snr_values_db = SNR_RANGE_DB_EVAL
     rrmse_temporal_per_snr = []
     rrmse_spectral_per_snr = []
     cc_per_snr = []
-    cosine_sim_power_ratios_at_neg14db = [] # New list for cosine similarity at -14dB
+    cosine_sim_power_ratios_at_neg14db = [] # cosine similarity of power ratios at -14 dB
 
-    # --- New: Collect one sample per SNR for grouped plots ---
-    snr_samples = []  # List of (snr, noisy, clean, denoised)
-    sample_saved_for_minus6db = False
-
-    # --- New: Store band power ratios for all SNRs for plotting later ---
+    # --- Store band power ratios for all SNRs for plotting later ---
     band_power_ratios_per_snr = {band: {'clean': [], 'noisy': [], 'denoised': []} for band in EEG_BANDS.keys()}
 
-    # --- Shared sample for all methods ---
-    SHARED_SAMPLE_PATH = os.path.join(EVAL_PLOTS_DIR, "..", "shared_sample_denoising_-6.npz")
-    if not os.path.exists(SHARED_SAMPLE_PATH):
-        # Pick a fixed clean and noise epoch for all methods
-        np.random.seed(42)
-        clean_idx = 0
-        clean_epoch = test_clean_eeg_np[clean_idx].astype(np.float64).flatten()
-        noise_type = 'both'
-        eog = eog_noise[0] if eog_noise is not None else np.zeros_like(clean_epoch)
-        emg = emg_noise[0] if emg_noise is not None else np.zeros_like(clean_epoch)
-        noise_epoch = eog + emg
-        snr_db = -6
-        clean_power = np.mean(clean_epoch**2)
-        noise_power = np.mean(noise_epoch**2)
-        snr_linear = 10**(snr_db / 10)
-        alpha = np.sqrt(clean_power / (snr_linear * noise_power)) if noise_power > 0 else 0
-        noisy_signal = clean_epoch + alpha * noise_epoch
-        noisy_signal = noisy_signal - np.mean(noisy_signal)
-        clean_epoch = clean_epoch - np.mean(clean_epoch)
-        np.savez(SHARED_SAMPLE_PATH, clean=clean_epoch, noisy=noisy_signal)
-        print(f"Saved shared sample for -6dB to {SHARED_SAMPLE_PATH}")
-    else:
-        arr = np.load(SHARED_SAMPLE_PATH)
-        clean_epoch = arr["clean"]
-        noisy_signal = arr["noisy"]
+    # --- Shared sample for all methods (fixed -6 dB clean/noisy pair) ---
+    clean_epoch, noisy_signal = make_or_load_shared_sample(
+        SHARED_SAMPLE_PATH,
+        test_clean_eeg_np[0],
+        test_eog[0] if test_eog is not None else None,
+        test_emg[0] if test_emg is not None else None,
+    )
 
     print("\n--- Starting evaluation across different SNRs ---")
     for current_snr_db in snr_values_db:
@@ -336,13 +92,20 @@ def main():
         # Create a test dataset specifically for this SNR
         # The EEGNoiseDataset's __getitem__ will now use this specific SNR
         test_dataset_current_snr = EEGNoiseDataset(
-            test_clean_eeg_np, eog_noise, emg_noise, [current_snr_db, current_snr_db], # Fixed SNR for testing
+            test_clean_eeg_np, test_eog, test_emg, [current_snr_db, current_snr_db], # Fixed SNR for testing
             num_noise_variants_per_clean_epoch=NUM_NOISE_VARIANTS # Pass the new parameter
         )
+        # num_workers/pin_memory are gated on CUDA so the metric-producing CPU
+        # path stays serial (num_workers=0) and RNG-order-identical to before;
+        # the __getitem__ noise synthesis uses the un-seeded global numpy RNG,
+        # so adding workers there would change the drawn noisy signals.
         test_loader_current_snr = DataLoader(
             test_dataset_current_snr,
             batch_size=BATCH_SIZE,
             shuffle=False, # Do NOT shuffle for consistent evaluation
+            num_workers=(4 if device == "cuda" else 0),
+            pin_memory=(device == "cuda"),
+            persistent_workers=(device == "cuda"),
         )
 
         batch_rrmse_temporal = []
@@ -350,22 +113,21 @@ def main():
         batch_cc = []
         batch_cosine_sim_power_ratios = []
 
-        # --- New: Band power ratio aggregation for each SNR ---
+        # --- Band power ratio aggregation for each SNR ---
         clean_band_ratios_agg = {band: [] for band in EEG_BANDS.keys()}
         noisy_band_ratios_agg = {band: [] for band in EEG_BANDS.keys()}
         denoised_band_ratios_agg = {band: [] for band in EEG_BANDS.keys()}
 
-        # --- New: Save one example plot per SNR ---
-        example_saved = False
-
         with torch.no_grad():
             for batch_idx, (noisy_signals, clean_signals) in enumerate(tqdm(test_loader_current_snr, desc=f"SNR {current_snr_db}dB")):
-                noisy_signals = noisy_signals.to(device)
-                clean_signals = clean_signals.to(device)
+                # Only noisy_signals is fed to the model, so only it needs the
+                # device. clean_signals is used solely for numpy metrics, so we
+                # keep it on the CPU (avoids a wasted H2D + D2H round-trip).
+                noisy_signals = noisy_signals.to(device, non_blocking=True)
                 denoised_signals = generator(noisy_signals)
 
                 noisy_signals_np = noisy_signals.cpu().numpy()
-                clean_signals_np = clean_signals.cpu().numpy()
+                clean_signals_np = clean_signals.numpy()
                 denoised_signals_np = denoised_signals.cpu().numpy()
 
                 for i in range(noisy_signals.shape[0]):
@@ -396,17 +158,6 @@ def main():
                         noisy_band_ratios_agg[band].append(noisy_ratios[f'{band}_ratio'])
                         denoised_band_ratios_agg[band].append(denoised_ratios[f'{band}_ratio'])
 
-                    # --- Collect one sample per SNR for grouped plots ---
-                    if not example_saved:
-                        # Only save -6dB sample for multi_snr_sample_denoising
-                        if current_snr_db == -6 and not sample_saved_for_minus6db:
-                            snr_samples = [(current_snr_db,
-                                            noisy_signals_np[i, 0, :],
-                                            clean_signals_np[i, 0, :],
-                                            denoised_signals_np[i, 0, :])]
-                            sample_saved_for_minus6db = True
-                        example_saved = True
-            
             # Aggregate metrics for the current SNR
             rrmse_temporal_per_snr.append(np.mean(batch_rrmse_temporal))
             rrmse_spectral_per_snr.append(np.mean(batch_rrmse_spectral))
@@ -454,19 +205,17 @@ def main():
         plt.close()
         print(f"Saved overall {band.capitalize()} band power ratio vs SNR bar chart to '{os.path.join(EVAL_PLOTS_DIR, fname)}'")
 
-    # Only save the -6dB grouped sample plot
-    if True:  # Always save the shared sample
-        # Use the loaded shared sample
-        noisy = noisy_signal
-        clean = clean_epoch
-        with torch.no_grad():
-            denoised = generator(torch.from_numpy(noisy).float().unsqueeze(0).unsqueeze(0).to(device)).cpu().detach().numpy().flatten()
-        sample_txt_path = os.path.join(EVAL_PLOTS_DIR, "sample_denoising_-6.txt")
-        with open(sample_txt_path, "w") as f:
-            f.write("Index\tClean\tNoisy\tDenoised\n")
-            for i in range(len(clean)):
-                f.write(f"{i}\t{clean[i]}\t{noisy[i]}\t{denoised[i]}\n")
-        print(f"Saved sample denoising signals to '{sample_txt_path}'")
+    # Save the -6 dB shared sample: clean, noisy, and AR-WGAN denoised
+    noisy = noisy_signal
+    clean = clean_epoch
+    with torch.no_grad():
+        denoised = generator(torch.from_numpy(noisy).float().unsqueeze(0).unsqueeze(0).to(device)).cpu().detach().numpy().flatten()
+    sample_txt_path = os.path.join(EVAL_PLOTS_DIR, "sample_denoising_-6.txt")
+    with open(sample_txt_path, "w") as f:
+        f.write("Index\tClean\tNoisy\tDenoised\n")
+        for i in range(len(clean)):
+            f.write(f"{i}\t{clean[i]}\t{noisy[i]}\t{denoised[i]}\n")
+    print(f"Saved sample denoising signals to '{sample_txt_path}'")
 
     print("\n--- Plotting SNR vs. Metrics ---")
     # Plot RRMSE Temporal vs SNR
@@ -527,13 +276,16 @@ def main():
     # Re-create a test loader with the original random SNR range for overall metrics
     # Note: SNR_RANGE_DB here is the range used during training (e.g., [-5, 5])
     test_dataset_overall = EEGNoiseDataset(
-        test_clean_eeg_np, eog_noise, emg_noise, SNR_RANGE_DB, # Use the original range for overall metrics
+        test_clean_eeg_np, test_eog, test_emg, SNR_RANGE_DB, # Use the original range for overall metrics
         num_noise_variants_per_clean_epoch=NUM_NOISE_VARIANTS # Pass the new parameter
     )
     test_loader_overall = DataLoader(
         test_dataset_overall,
         batch_size=BATCH_SIZE,
         shuffle=False,
+        num_workers=(4 if device == "cuda" else 0),
+        pin_memory=(device == "cuda"),
+        persistent_workers=(device == "cuda"),
     )
 
     all_rrmse_overall = []
@@ -544,12 +296,12 @@ def main():
 
     with torch.no_grad():
         for batch_idx, (noisy_signals, clean_signals) in enumerate(tqdm(test_loader_overall, desc="Overall Metrics")):
-            noisy_signals = noisy_signals.to(device)
-            clean_signals = clean_signals.to(device)
+            # clean_signals is only used for numpy metrics; keep it on CPU.
+            noisy_signals = noisy_signals.to(device, non_blocking=True)
             denoised_signals = generator(noisy_signals)
 
             noisy_signals_np = noisy_signals.cpu().numpy()
-            clean_signals_np = clean_signals.cpu().numpy()
+            clean_signals_np = clean_signals.numpy()
             denoised_signals_np = denoised_signals.cpu().numpy()
 
             for i in range(noisy_signals.shape[0]):
@@ -573,6 +325,7 @@ def main():
                     denoised_signals_np[PSD_SAMPLE_INDEX_FOR_VIZ, 0, :],
                     SAMPLING_RATE,
                     EEG_BANDS,
+                    method_name="AR-WGAN",
                     save_path=os.path.join(EVAL_PLOTS_DIR, "psd_comparison_example.png")
                 )
                 print(f"Saved PSD comparison plot to '{os.path.join(EVAL_PLOTS_DIR, 'psd_comparison_example.png')}'")

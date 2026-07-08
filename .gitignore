@@ -1,4 +1,8 @@
-.venv/*
-__pycache__/*
+.venv/
+**/__pycache__/
+*.pyc
 logs/*
 test.py
+
+# Regenerable cache (rebuilt on demand by the evaluators)
+shared_sample_denoising_-6.npz

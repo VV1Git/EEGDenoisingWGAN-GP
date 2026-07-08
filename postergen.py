@@ -2,26 +2,24 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.tri as mtri
-from scipy.signal import welch, wiener as scipy_wiener
+from scipy.signal import welch
 from scipy.interpolate import griddata
-import scipy.signal as signal
 from matplotlib import cm
 from matplotlib.colors import Normalize
 from matplotlib.patches import Patch
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-from sklearn.decomposition import FastICA
 import torch
 
 # Add project root to path to import local modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 try:
 	from variables import (
-		EEG_FILE, EOG_FILE, EMG_FILE, CHANNELS_EEG, FEATURES_GEN, SAVED_MODEL_PATH, 
-		SAMPLING_RATE, EEG_BANDS
+		EEG_FILE, EOG_FILE, EMG_FILE, CHANNELS_EEG, FEATURES_GEN, SAVED_MODEL_PATH,
+		SAMPLING_RATE
 	)
 	from model import Generator
 	from eeg_data_generator import prepare_eeg_data
+	from baselines import ica_denoise, wiener_denoise
 except ImportError:
 	print("Warning: Project modules not found. Comparison functions may fail.")
 
@@ -189,7 +187,7 @@ def plot_wiener_example_from_dataset():
 	# stronger smoothing for Wiener: use larger window (in samples)
 	fs = 250
 	win_samples = max(3, int(0.35 * fs))
-	denoised = wiener(noisy, mysize=win_samples)
+	denoised = wiener_denoise(noisy, mysize=win_samples)
 
 	# Single-panel figure sized 5x4 (width x height)
 	fig, ax = plt.subplots(1, 1, figsize=(5, 4))
@@ -244,7 +242,7 @@ def plot_wiener_residual_from_dataset():
 	# same Wiener smoothing as example
 	fs = 250
 	win_samples = max(3, int(0.35 * fs))
-	denoised = wiener(noisy, mysize=win_samples)
+	denoised = wiener_denoise(noisy, mysize=win_samples)
 
 	residual = noisy - denoised
 
@@ -574,25 +572,15 @@ def plot_weight_clipping_vs_gp():
 # --- Denoising Helpers ---
 
 def get_denoised_ica(noisy_signal, n_components=3):
-	"""Apply ICA denoising (ported from ica.py)."""
-	x = noisy_signal.flatten()
-	# Create time-delayed versions to simulate channels
-	X = np.stack([np.roll(x, shift) for shift in range(n_components)], axis=1)
-	
+	"""ICA denoising via the shared baseline (identical to comparisons/ica.py)."""
 	try:
-		ica = FastICA(n_components=n_components, random_state=42, max_iter=2000, tol=0.01)
-		S_ = ica.fit_transform(X)
-		# Remove component with highest kurtosis
-		kurt = np.abs(np.apply_along_axis(lambda s: np.mean((s - np.mean(s))**4) / (np.var(s)**2 + 1e-9), 0, S_))
-		S_[:, np.argmax(kurt)] = 0
-		X_denoised = ica.inverse_transform(S_)
-		return X_denoised[:, 0]
+		return ica_denoise(noisy_signal, n_components=n_components)
 	except Exception:
-		return x
+		return noisy_signal.flatten()
 
 def get_denoised_wiener(noisy_signal, mysize=31):
-	"""Apply Scipy Wiener filter (ported from wiener_filter.py)."""
-	return scipy_wiener(noisy_signal, mysize=mysize)
+	"""Wiener denoising via the shared baseline."""
+	return wiener_denoise(noisy_signal, mysize=mysize)
 
 def load_arwgan_generator():
 	"""Load the trained generator model."""
@@ -657,6 +645,23 @@ def prepare_comparison_data(target_snr_db=0):
 
 # --- New Comparison Plotting Functions ---
 
+def _method_psd(sig):
+	"""Welch PSD (single-sided) used by the poster comparison figures."""
+	return welch(sig, fs=SAMPLING_RATE, nperseg=min(len(sig), 256))
+
+def _denoise_all_methods(noisy, clean, gen, device):
+	"""Denoise one noisy epoch with ICA, Wiener, and AR-WGAN and return the
+	three denoised signals. Shared by the poster comparison figures."""
+	den_ica = get_denoised_ica(noisy)
+	den_wiener = get_denoised_wiener(noisy)
+	if gen is not None:
+		den_arwgan = get_denoised_arwgan(noisy, gen, device)
+		if len(den_arwgan) != len(clean):
+			den_arwgan = np.resize(den_arwgan, len(clean))
+	else:
+		den_arwgan = np.zeros_like(clean)
+	return den_ica, den_wiener, den_arwgan
+
 def plot_all_methods_comparison_0db():
 	"""
 	Generate time-series comparison of ICA, Wiener, and AR-WGAN at 0 dB SNR.
@@ -668,18 +673,9 @@ def plot_all_methods_comparison_0db():
 	
 	clean, noisy = prepare_comparison_data(target_snr_db=0)
 	
-	# 1. Denoise with all methods
-	den_ica = get_denoised_ica(noisy)
-	den_wiener = get_denoised_wiener(noisy)
-	
+	# Denoise with all methods (shared helper)
 	gen, device = load_arwgan_generator()
-	if gen:
-		den_arwgan = get_denoised_arwgan(noisy, gen, device)
-		# Ensure length match if resizing happened
-		if len(den_arwgan) != len(clean):
-			den_arwgan = np.resize(den_arwgan, len(clean))
-	else:
-		den_arwgan = np.zeros_like(noisy)
+	den_ica, den_wiener, den_arwgan = _denoise_all_methods(noisy, clean, gen, device)
 
 	# 2. Plot stacked
 	fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True, constrained_layout=True)
@@ -725,27 +721,16 @@ def plot_psd_comparison_all_methods():
 	
 	clean, noisy = prepare_comparison_data(target_snr_db=0)
 	
-	# Denoise
-	den_ica = get_denoised_ica(noisy)
-	den_wiener = get_denoised_wiener(noisy)
+	# Denoise with all methods (shared helper)
 	gen, device = load_arwgan_generator()
-	if gen:
-		den_arwgan = get_denoised_arwgan(noisy, gen, device)
-		if len(den_arwgan) != len(clean): den_arwgan = np.resize(den_arwgan, len(clean))
-	else:
-		den_arwgan = np.zeros_like(noisy)
-		
-	fs = SAMPLING_RATE
-	
-	# Calculate PSDs
-	def get_psd(s):
-		return welch(s, fs=fs, nperseg=min(len(s), 256))
+	den_ica, den_wiener, den_arwgan = _denoise_all_methods(noisy, clean, gen, device)
 
-	f, psd_clean = get_psd(clean)
-	_, psd_noisy = get_psd(noisy)
-	_, psd_ica = get_psd(den_ica)
-	_, psd_wiener = get_psd(den_wiener)
-	_, psd_arwgan = get_psd(den_arwgan)
+	# Calculate PSDs (shared helper)
+	f, psd_clean = _method_psd(clean)
+	_, psd_noisy = _method_psd(noisy)
+	_, psd_ica = _method_psd(den_ica)
+	_, psd_wiener = _method_psd(den_wiener)
+	_, psd_arwgan = _method_psd(den_arwgan)
 
 	# Plot
 	fig, ax = plt.subplots(figsize=(10, 6))
@@ -809,15 +794,8 @@ def plot_methods_for_snrs(snrs):
 	for snr in snrs:
 		clean, noisy = prepare_comparison_data(target_snr_db=snr)
 
-		# Denoise
-		den_ica = get_denoised_ica(noisy)
-		den_wiener = get_denoised_wiener(noisy)
-		if gen:
-			den_arwgan = get_denoised_arwgan(noisy, gen, device)
-			if len(den_arwgan) != len(clean):
-				den_arwgan = np.resize(den_arwgan, len(clean))
-		else:
-			den_arwgan = np.zeros_like(clean)
+		# Denoise with all methods (shared helper)
+		den_ica, den_wiener, den_arwgan = _denoise_all_methods(noisy, clean, gen, device)
 
 		# --- Time series figure (3 stacked rows: ICA / Wiener / AR-WGAN) ---
 		fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True, constrained_layout=True)
@@ -844,16 +822,12 @@ def plot_methods_for_snrs(snrs):
 		plt.close(fig)
 		print(f"Saved {out_time}")
 
-		# --- PSD figure ---
-		def _psd(sig):
-			freqs, pxx = welch(sig, fs=SAMPLING_RATE, nperseg=min(len(sig), 256))
-			return freqs, pxx
-
-		fc, p_clean = _psd(clean)
-		_, p_noisy = _psd(noisy)
-		_, p_ica = _psd(den_ica)
-		_, p_wiener = _psd(den_wiener)
-		_, p_arwgan = _psd(den_arwgan)
+		# --- PSD figure (shared PSD helper) ---
+		fc, p_clean = _method_psd(clean)
+		_, p_noisy = _method_psd(noisy)
+		_, p_ica = _method_psd(den_ica)
+		_, p_wiener = _method_psd(den_wiener)
+		_, p_arwgan = _method_psd(den_arwgan)
 
 		fig, ax = plt.subplots(figsize=(10, 6))
 		ax.plot(fc, p_clean, color="black", linewidth=2.0, label="Clean")

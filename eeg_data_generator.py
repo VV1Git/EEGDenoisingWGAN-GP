@@ -1,10 +1,11 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
 import os
 
 # Import shared variables
-from variables import EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB
+from variables import EEG_FILE, EOG_FILE, EMG_FILE, SNR_RANGE_DB, TRAIN_SPLIT_RATIO
 
 # --- 1. Custom Dataset Class ---
 class EEGNoiseDataset(Dataset):
@@ -33,9 +34,15 @@ class EEGNoiseDataset(Dataset):
             snr_range_db (list): A list [min_snr_db, max_snr_db] for random SNR generation.
             num_noise_variants_per_clean_epoch (int): Number of noise variants per clean epoch (for augmentation).
         """
-        self.clean_eeg = clean_eeg
-        self.eog_noise = eog_noise
-        self.emg_noise = emg_noise
+        # Pre-convert to contiguous float32 once at init. The consumers all
+        # ultimately build float32 tensors, so caching a contiguous float32 copy
+        # here (a) halves host memory bandwidth on the ~millions of __getitem__
+        # calls, (b) avoids a per-sample dtype-cast copy, and (c) produces
+        # smaller/contiguous buffers for faster pinned H2D transfers to the GPU.
+        # np.asarray(..., dtype=float32) is a no-op if already float32/contiguous.
+        self.clean_eeg = np.ascontiguousarray(clean_eeg, dtype=np.float32)
+        self.eog_noise = np.ascontiguousarray(eog_noise, dtype=np.float32) if eog_noise is not None else eog_noise
+        self.emg_noise = np.ascontiguousarray(emg_noise, dtype=np.float32) if emg_noise is not None else emg_noise
         self.snr_range_db = snr_range_db
         self.num_noise_variants_per_clean_epoch = num_noise_variants_per_clean_epoch
 
@@ -79,17 +86,22 @@ class EEGNoiseDataset(Dataset):
         # Select the clean EEG epoch for this index
         clean_epoch = self.clean_eeg[clean_idx]
 
-        # Randomly choose noise type: 'eog', 'emg', or 'both'
-        noise_type = np.random.choice(['eog', 'emg', 'both'])
+        # Randomly choose noise type: 0='eog', 1='emg', 2='both'.
+        # An integer draw is far cheaper than np.random.choice on a list of
+        # strings (no index-array build / object-dtype handling / allocation)
+        # while giving the identical uniform-1/3 distribution over the three
+        # categories. All epochs are length num_samples_per_epoch by
+        # construction, so the former per-branch length-fixups were dead code.
+        noise_type = np.random.randint(3)
 
         # Select noise(s) accordingly
-        if noise_type == 'eog':
+        if noise_type == 0:  # 'eog'
             noise_pool = self.eog_noise
             if len(noise_pool) == 0:
                 noise_epoch = np.zeros_like(clean_epoch)
             else:
                 noise_epoch = noise_pool[np.random.randint(len(noise_pool))]
-        elif noise_type == 'emg':
+        elif noise_type == 1:  # 'emg'
             noise_pool = self.emg_noise
             if len(noise_pool) == 0:
                 noise_epoch = np.zeros_like(clean_epoch)
@@ -108,35 +120,22 @@ class EEGNoiseDataset(Dataset):
                 else:
                     eog_epoch = self.eog_noise[np.random.randint(len(self.eog_noise))]
                     emg_epoch = self.emg_noise[np.random.randint(len(self.emg_noise))]
-                    # Ensure both are the correct length
-                    if len(eog_epoch) != self.num_samples_per_epoch:
-                        if len(eog_epoch) > self.num_samples_per_epoch:
-                            eog_epoch = eog_epoch[:self.num_samples_per_epoch]
-                        else:
-                            eog_epoch = np.concatenate((eog_epoch, np.zeros(self.num_samples_per_epoch - len(eog_epoch))))
-                    if len(emg_epoch) != self.num_samples_per_epoch:
-                        if len(emg_epoch) > self.num_samples_per_epoch:
-                            emg_epoch = emg_epoch[:self.num_samples_per_epoch]
-                        else:
-                            emg_epoch = np.concatenate((emg_epoch, np.zeros(self.num_samples_per_epoch - len(emg_epoch))))
                     noise_epoch = eog_epoch + emg_epoch
-
-        # Ensure the selected noise epoch has the same length as the clean epoch.
-        if len(noise_epoch) != self.num_samples_per_epoch:
-            if len(noise_epoch) > self.num_samples_per_epoch:
-                noise_epoch = noise_epoch[:self.num_samples_per_epoch]
-            else:
-                padding = np.zeros(self.num_samples_per_epoch - len(noise_epoch))
-                noise_epoch = np.concatenate((noise_epoch, padding))
 
         # Synthesize the noisy signal by adding scaled noise
         noisy_epoch = self._add_noise_with_snr(clean_epoch, noise_epoch, self.snr_range_db)
 
-        # Convert NumPy arrays to PyTorch tensors
-        # .float() ensures they are float32, which is common for neural networks
+        # Convert NumPy arrays to PyTorch tensors.
+        # Arrays are already contiguous float32 (cast once at __init__ and the
+        # SNR-mix math preserves float32), so no per-sample .float() copy is
+        # needed. torch.from_numpy(...).float() would only re-copy identical data.
+        # np.ascontiguousarray guards against a rare non-contiguous view (e.g.
+        # the length-fixup path) so from_numpy never sees a non-contiguous array.
+        noisy_epoch = np.ascontiguousarray(noisy_epoch, dtype=np.float32)
+        clean_epoch = np.ascontiguousarray(clean_epoch, dtype=np.float32)
         # .unsqueeze(0) adds a channel dimension (e.g., (512,) -> (1, 512) for single-channel EEG)
-        noisy_epoch_tensor = torch.from_numpy(noisy_epoch).float().unsqueeze(0)
-        clean_epoch_tensor = torch.from_numpy(clean_epoch).float().unsqueeze(0)
+        noisy_epoch_tensor = torch.from_numpy(noisy_epoch).unsqueeze(0)
+        clean_epoch_tensor = torch.from_numpy(clean_epoch).unsqueeze(0)
 
         return noisy_epoch_tensor, clean_epoch_tensor
 
@@ -263,6 +262,62 @@ def prepare_eeg_data(eeg_file, eog_file, emg_file, snr_range_db):
     emg_noise_data = normalize_data_to_range(emg_noise_data)
 
     return clean_eeg_data, eog_noise_data, emg_noise_data
+
+
+# --- 3. Train/Test Split (single source of truth) ---
+def split_train_test(clean_eeg, eog_noise, emg_noise, train_ratio=TRAIN_SPLIT_RATIO, seed=42):
+    """Split the clean EEG and both noise pools into train and test sets.
+
+    Every script (training and all evaluators) calls this with the same seed, so
+    the held-out sets are identical everywhere. The noise pools are split too, so
+    no test-time EOG/EMG epoch is ever seen during training.
+
+    Returns:
+        (train_clean, test_clean, train_eog, test_eog, train_emg, test_emg).
+        A noise pool that is None or has a single epoch is returned unchanged for
+        both train and test.
+    """
+    test_size = 1 - train_ratio
+
+    def _split(pool):
+        if pool is None or len(pool) < 2:
+            return pool, pool
+        return train_test_split(pool, test_size=test_size, random_state=seed)
+
+    train_clean, test_clean = train_test_split(clean_eeg, test_size=test_size, random_state=seed)
+    train_eog, test_eog = _split(eog_noise)
+    train_emg, test_emg = _split(emg_noise)
+    return train_clean, test_clean, train_eog, test_eog, train_emg, test_emg
+
+
+def make_or_load_shared_sample(path, clean_epoch, eog, emg, snr_db=-6, seed=42):
+    """Return a fixed (clean, noisy) pair at the given SNR, shared by all methods.
+
+    The pair is generated once from the given clean epoch and EOG+EMG artifacts,
+    mean-subtracted, and cached to ``path`` so every evaluator plots the exact
+    same sample. If the cache exists it is loaded and reused.
+    """
+    if os.path.exists(path):
+        arr = np.load(path)
+        return arr["clean"], arr["noisy"]
+
+    np.random.seed(seed)
+    clean_epoch = np.asarray(clean_epoch, dtype=np.float64).flatten()
+    eog = eog if eog is not None else np.zeros_like(clean_epoch)
+    emg = emg if emg is not None else np.zeros_like(clean_epoch)
+    noise_epoch = np.asarray(eog, dtype=np.float64).flatten() + np.asarray(emg, dtype=np.float64).flatten()
+
+    clean_power = np.mean(clean_epoch ** 2)
+    noise_power = np.mean(noise_epoch ** 2)
+    snr_linear = 10 ** (snr_db / 10)
+    alpha = np.sqrt(clean_power / (snr_linear * noise_power)) if noise_power > 0 else 0
+    noisy = clean_epoch + alpha * noise_epoch
+
+    noisy = noisy - np.mean(noisy)
+    clean_epoch = clean_epoch - np.mean(clean_epoch)
+    np.savez(path, clean=clean_epoch, noisy=noisy)
+    return clean_epoch, noisy
+
 
 # --- Example Usage (This block will run when the script is executed directly) ---
 if __name__ == "__main__":

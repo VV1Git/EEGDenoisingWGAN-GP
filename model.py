@@ -8,7 +8,7 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         layers = [
             nn.Conv1d(channels_eeg, features_d, kernel_size=4, stride=2, padding=1),
-            nn.LeakyReLU(0.2),
+            nn.LeakyReLU(0.2, inplace=True),
         ]
         in_ch = features_d
         for i in range(1, num_layers):
@@ -34,7 +34,7 @@ class Discriminator(nn.Module):
                 bias=False,
             ),
             nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True),
-            nn.LeakyReLU(0.2),
+            nn.LeakyReLU(0.2, inplace=True),
         )
 
     def forward(self, x):
@@ -51,7 +51,7 @@ class Generator(nn.Module):
         # First encoder layer (no norm)
         enc_layers.append(nn.Sequential(
             nn.Conv1d(channels_eeg, features_g, 4, 2, 1),
-            nn.LeakyReLU(0.2),
+            nn.LeakyReLU(0.2, inplace=True),
         ))
         encoder_channels.append(features_g)
         in_ch = features_g
@@ -91,7 +91,7 @@ class Generator(nn.Module):
         return nn.Sequential(
             nn.Conv1d(in_channels, out_channels, 4, 2, 1, bias=False),
             nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True),
-            nn.LeakyReLU(0.2),
+            nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(dropout_p),
         )
 
@@ -100,7 +100,7 @@ class Generator(nn.Module):
         return nn.Sequential(
             nn.ConvTranspose1d(in_channels, out_channels, 4, 2, 1, bias=False),
             nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, affine=True),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Dropout(dropout_p),
         )
 
@@ -123,26 +123,34 @@ class Generator(nn.Module):
         return out
 
     def _crop_or_pad(self, tensor, target_length):
-        """Crop or pad tensor along the last dimension to match target_length."""
+        """Crop or pad tensor along the last dimension to match target_length.
+
+        NOTE: this is load-bearing, not dead code. At seq_len=512 the crop
+        branch fires on every decoder skip (halving each skip length before the
+        concat), so removing it would change outputs and break the cat. The
+        crop branch is ordered first because it is the case that always fires.
+        """
         current_length = tensor.size(-1)
+        if current_length > target_length:  # hot path (always fires at 512)
+            return tensor[..., :target_length]
         if current_length == target_length:
             return tensor
-        elif current_length > target_length:
-            return tensor[..., :target_length]
-        else:
-            pad_amt = target_length - current_length
-            # Pad at the end
-            return nn.functional.pad(tensor, (0, pad_amt))
+        pad_amt = target_length - current_length
+        # Pad at the end
+        return nn.functional.pad(tensor, (0, pad_amt))
 
 def initialize_weights(model):
+    # Same initial values as before (conv/convT weights ~ N(0, 0.02), biases 0,
+    # GroupNorm weight 1 / bias 0). Uses .weight/.bias instead of the deprecated
+    # .data and an elif so GroupNorm's bias isn't re-zeroed by a trailing branch.
     for m in model.modules():
         if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
-            nn.init.normal_(m.weight.data, 0.0, 0.02)
-        if isinstance(m, (nn.GroupNorm,)):
-            nn.init.constant_(m.weight.data, 1.0)
-            nn.init.constant_(m.bias.data, 0)
-        if hasattr(m, 'bias') and m.bias is not None:
-            nn.init.constant_(m.bias.data, 0)
+            nn.init.normal_(m.weight, 0.0, 0.02)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.ones_(m.weight)
+            nn.init.zeros_(m.bias)
 
 # Example for testing the model shapes (optional)
 if __name__ == "__main__":
@@ -151,18 +159,20 @@ if __name__ == "__main__":
     channels = 1
     seq_len = 512
     features_d = 16
+    features_g = 16
     x = torch.randn(batch_size, channels, seq_len)
     disc = Discriminator(channels, seq_len, features_d)
-    out_disc = disc(x)
-    print(f"Discriminator input shape: {x.shape}")
-    print(f"Discriminator output shape: {out_disc.shape}") # Should be (batch_size, 1, 1)
-
-    # Test Generator
-    features_g = 16
     gen = Generator(channels, seq_len, features_g)
-    out_gen = gen(x) # Generator takes noisy EEG as input
-    print(f"Generator input shape: {x.shape}")
-    print(f"Generator output shape: {out_gen.shape}") # Should be (batch_size, channels, seq_len)
+    # This is only a shape smoke test; skip building the autograd graph.
+    with torch.inference_mode():
+        out_disc = disc(x)
+        print(f"Discriminator input shape: {x.shape}")
+        print(f"Discriminator output shape: {out_disc.shape}") # Should be (batch_size, 1, 1)
+
+        # Test Generator
+        out_gen = gen(x) # Generator takes noisy EEG as input
+        print(f"Generator input shape: {x.shape}")
+        print(f"Generator output shape: {out_gen.shape}") # Should be (batch_size, channels, seq_len)
 
     # Test weight initialization
     initialize_weights(gen)

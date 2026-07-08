@@ -1,57 +1,74 @@
 # EEGDenoisingWGAN-GP
 
-This repository provides a deep learning framework for denoising EEG (Electroencephalography) signals using a Wasserstein Generative Adversarial Network with Gradient Penalty (WGAN-GP). The approach is specifically designed to remove physiological artifacts such as EOG (Electrooculogram) and EMG (Electromyogram) noise from EEG recordings, leveraging state-of-the-art generative modeling techniques for effective denoising.
+Code for denoising EEG signals with a Wasserstein GAN with gradient penalty
+(WGAN-GP). The model removes eye (EOG) and muscle (EMG) artifacts from
+single-channel EEG. It is trained and tested on the EEGdenoiseNet benchmark and
+compared against ICA and a Wiener filter.
 
-## Features
+## How it works
 
-- **WGAN-GP Architecture**: Utilizes a Wasserstein GAN with gradient penalty for stable and robust adversarial training.
-- **Custom Data Generation**: Dynamically creates noisy-clean EEG pairs by adding scaled EOG/EMG noise to clean EEG signals at random Signal-to-Noise Ratios (SNR).
-- **Configurable Data Augmentation**: Supports multiple noise variants for each clean epoch to increase dataset diversity and improve generalization.
-- **End-to-End PyTorch Pipeline**: Seamless integration from data loading and augmentation to training and evaluation.
-- **U-Net Inspired Generator**: The generator model follows an encoder-decoder (U-Net-like) architecture, which is well-suited for 1D time-series denoising.
+The generator is a 1D U-Net that maps a noisy EEG epoch to a clean one. The
+critic scores clean epochs against the generator's output, and the gradient
+penalty keeps training stable. The generator is trained with an adversarial term
+plus an L1 reconstruction term against the clean signal.
 
-## How It Works
+Training data is built as it is needed. `prepare_eeg_data` loads the clean EEG,
+EOG, and EMG arrays and normalizes each epoch to the range [-1, 1].
+`EEGNoiseDataset` then adds a randomly chosen artifact (EOG, EMG, or both) at a
+random SNR to make each noisy/clean pair.
 
-1. **Data Preparation**: 
-    - Loads clean EEG, EOG, and EMG signals from `.npy` files.
-    - Normalizes each epoch to the range [-1, 1] for stable neural network training.
-    - Dynamically generates noisy EEG signals by mixing clean EEG with EOG/EMG noise at random SNRs.
-
-2. **Dataset & Dataloader**:
-    - The custom `EEGNoiseDataset` class produces paired noisy and clean EEG epochs for training.
-    - DataLoader shuffles and batches data efficiently for GPU/CPU processing.
-
-3. **Model Architecture**:
-    - **Generator**: Encoder-decoder network that attempts to recover clean EEG from noisy input.
-    - **Critic (Discriminator)**: Evaluates the realism of the denoised output versus ground truth clean EEG.
-
-4. **Training Loop**:
-    - Adversarial training where the generator learns to produce clean signals that "fool" the critic.
-    - Uses gradient penalty to stabilize WGAN training for time-series data.
-
-5. **Evaluation**:
-    - Provides evaluation scripts to test denoising performance at various SNR levels.
-    - Calculates metrics such as Relative Root Mean Squared Error (RRMSE) for quantitative assessment.
+The clean EEG and both noise pools are split into train and test with
+`split_train_test`, using the same seed everywhere. Training uses only the
+training epochs and the training noise. Every evaluator uses only the test epochs
+and the test noise, so nothing the model saw during training appears at test
+time.
 
 ## Requirements
 
-- Python 3.x
-- PyTorch
-- NumPy
+Python 3, plus numpy, scipy, matplotlib, scikit-learn, tqdm, torch, joblib, and
+Pillow. See `requirements.txt`.
 
-## Getting Started
+## Getting started
 
-1. **Prepare Dataset**: Place your preprocessed EEG, EOG, and EMG `.npy` files in the `dataset/` directory.
-2. **Configure Parameters**: Adjust settings in `variables.py` for your dataset and training preferences.
-3. **Train the Model**: Run `train.py` to begin WGAN-GP training.
-4. **Evaluate**: Use `evaluate.py` to assess model performance and generate evaluation plots.
+Set up a virtual environment from the repo root:
 
-## Repository Structure
+```bash
+py -3.14 -m venv .venv          # or: python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt
+```
 
-- `train.py` – Training loop and pipeline
-- `model.py` – Generator and Critic architectures
-- `eeg_data_generator.py` – Data preparation and augmentation
-- `variables.py` – Central configuration
-- `utils.py` – Utility functions (e.g., gradient penalty)
-- `evaluate.py` – Evaluation scripts
+Put the `.npy` files for clean EEG, EOG, and EMG in `dataset/`. Settings such as
+the learning rate, batch size, and SNR range are in `variables.py`.
 
+Then run, from the repo root, in this order:
+
+1. `train.py` trains the model and saves the generator to `model/`.
+2. `evaluate.py` scores the trained generator across SNR levels and writes plots
+   and metric text files to `evaluation_plots/`.
+3. `comparisons/ica.py` and `comparisons/wiener_filter.py` do the same for the
+   two baselines.
+4. `graphs.py` reads the per-method outputs and builds the combined figures in
+   `finalplots/`.
+5. `postergen.py` builds the poster figures in `posterplots/`.
+
+AR-WGAN, ICA, and the Wiener filter all use the same held-out test split, the
+same noise mixing, and the same metric and denoiser code, so the comparison is
+fair.
+
+## Layout
+
+- `train.py`: the training loop.
+- `model.py`: the generator (U-Net) and the critic.
+- `eeg_data_generator.py`: data loading, the noisy/clean dataset, the train/test
+  split, and the shared -6 dB sample.
+- `variables.py`: configuration.
+- `utils.py`: the gradient penalty and checkpoint helpers.
+- `metrics.py`: the metric functions (CC, RRMSE, band-power ratios), used by
+  every evaluator.
+- `baselines.py`: the ICA and Wiener denoisers, used by the comparison scripts
+  and the poster generator.
+- `plots.py`: the shared PSD comparison plot.
+- `evaluate.py`: evaluation of the trained model.
+- `comparisons/`: the ICA and Wiener-filter evaluations.
+- `graphs.py`: combines the per-method results into `finalplots/`.
+- `postergen.py`: the poster figures.
